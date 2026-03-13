@@ -178,6 +178,25 @@ def _reverse_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
     return frame.iloc[::-1].copy()
 
 
+def _to_linear_returns(frame: pd.DataFrame, source_kind: str) -> pd.DataFrame:
+    if source_kind == "prices":
+        returns = prices_to_returns(frame)
+    elif source_kind == "relatives":
+        returns = frame - 1.0
+    else:
+        raise ValueError(f"Unknown dataset kind: {source_kind}")
+
+    returns = returns.astype(float)
+    values = returns.to_numpy(dtype=float)
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size and finite_values.min() <= -1.0:
+        raise ValueError(
+            "Expected linear returns strictly greater than -1. "
+            f"Observed minimum value {finite_values.min():.6f}."
+        )
+    return returns
+
+
 def _load_price_dataset(
     name: str,
     data_home: str | Path | None = None,
@@ -189,7 +208,7 @@ def _load_price_dataset(
         data_home=data_home,
         download_if_missing=download_if_missing,
     )
-    return prices_to_returns(prices)
+    return _to_linear_returns(prices, spec.kind)
 
 
 def load_sp500_dataset(
@@ -237,7 +256,7 @@ def _load_relatives_dataset(
         data_home=data_home,
         download_if_missing=download_if_missing,
     )
-    return relatives - 1.0
+    return _to_linear_returns(relatives, spec.kind)
 
 
 def _load_sp500_and_factors() -> tuple[pd.DataFrame, pd.DataFrame]:
