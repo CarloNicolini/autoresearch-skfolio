@@ -50,6 +50,25 @@ This keeps the metric simple while forcing robustness into the validation design
 
 **First run**: Run the script as-is to establish the baseline.
 
+## Baseline Ladder
+
+Every experiment should be interpretable relative to a fixed benchmark ladder, not
+only relative to the previous commit.
+
+The built-in ladder in `train.py` is:
+
+1. `equal_weight_baseline`
+2. `inverse_volatility_baseline`
+3. `mean_risk_baseline`
+4. `risk_budgeting_baseline`
+5. `hierarchical_risk_parity_baseline`
+
+Guiding rule:
+
+- A new method should state clearly which baseline it is trying to beat and why.
+- If it cannot beat at least the simpler baselines robustly, it is not a strong value proposition.
+- Improvements should be explained in terms of where they come from, not only by quoting one scalar score.
+
 ## Validation Philosophy
 
 The validation suite in `train.py` is the real moat. It should be stricter than the model.
@@ -67,6 +86,42 @@ Guiding rules:
 - Asset-only cases should also exist so the agent can use randomized sub-universe backtests.
 - A feature that only works on some datasets should degrade gracefully or fall back cleanly on the others.
 - A model that only shines on one split is not interesting.
+
+## Robustness Gates
+
+`val_sharpe` remains the primary objective, but a run should also clear hard
+robustness gates. These gates are defined in `train.py` and should remain hard
+to game.
+
+Current gate families:
+
+1. Limit the number of failed dataset/CV cases.
+2. Limit the gap between original and reversed datasets.
+3. Limit the gap between price datasets and relatives datasets.
+4. Limit how much of the gain vs the reference baseline comes from one dataset family.
+
+Interpretation rule:
+
+- A run with a higher `val_sharpe` but failing robustness gates is not a strong baseline candidate.
+- A run with modestly lower `val_sharpe` but much stronger robustness may still be a better research baseline.
+
+## Dataset Family Attribution
+
+The reporting in `train.py` groups cases into broad families so gains can be
+explained, not just measured.
+
+Main families:
+
+1. `price`
+2. `relatives`
+3. `factor_aware`
+4. `original` versus `reversed` direction splits
+
+Expected behavior:
+
+- Good strategies should not depend on one family only.
+- If a gain is concentrated in one family, the experiment description should say so explicitly.
+- The family attribution table should be used to explain the value proposition of a new idea.
 
 ## Search Space
 
@@ -107,6 +162,24 @@ Primary axes:
    - `OpinionPooling`
    - later only if they can be parameterized mechanically
 
+## Strategy Composition Slots
+
+Treat `train.py` as a small research DSL with explicit strategy slots.
+
+Current slots:
+
+1. `preprocessor_kind`
+2. `pre_selector_kind`
+3. `optimizer_kind`
+4. `prior_kind`
+5. `post_processor_kind`
+
+Research rule:
+
+- Prefer changing one slot at a time.
+- If you add a new method, add it as a clean branch inside the relevant slot builder.
+- Avoid mixing unrelated slot changes in one experiment unless the earlier ablations already justified them.
+
 ## Research Discipline
 
 Follow these rules when exploring:
@@ -119,6 +192,8 @@ Follow these rules when exploring:
 6. Do not invent discretionary Black-Litterman or entropy-pooling views unless they are deterministic and reproducible from the data or explicitly supplied by the human.
 7. Use ensemble or stacking methods only after you already have a few strong, diverse base estimators.
 8. Prefer robust baselines over exotic constructions that only improve one corner case.
+9. Every experiment should declare a hypothesis, expected benefit, expected risk, and reference baseline.
+10. Use the grouped summaries and gain attribution output to explain why an improvement is believable.
 
 ## Output format
 
@@ -127,6 +202,7 @@ The script prints a summary like:
 ```text
 ---
 val_sharpe:       0.452123
+robust_pass:      True
 total_seconds:   47.3
 ```
 
@@ -141,23 +217,28 @@ grep "^val_sharpe:" run.log
 When an experiment finishes, append one row to `results.tsv` (tab-separated). Header and columns:
 
 ```text
-commit [tab] val_sharpe [tab] status [tab] description
+commit [tab] val_sharpe [tab] status [tab] axis [tab] baseline_ref [tab] hypothesis [tab] description
 ```
 
 1. Git commit hash (short, 7 chars)
 2. val_sharpe (e.g. 0.452123) — use -999.0 or similar for crashes
 3. status: `keep`, `discard`, or `crash`
-4. Short description of what this experiment tried
+4. The main changed axis
+5. The baseline reference used for attribution
+6. The experiment hypothesis
+7. Short description of what this experiment tried
 
 Example:
 
 ```text
-commit [tab] val_sharpe [tab] status [tab] description
-a1b2c3d [tab] 0.452123 [tab] keep [tab] baseline MeanRisk
-b2c3d4e [tab] 0.481200 [tab] keep [tab] RiskBudgeting + GerberCovariance
-c3d4e5f [tab] 0.440000 [tab] discard [tab] HierarchicalRiskParity (worse)
-d4e5f6g [tab] -999.0 [tab] crash [tab] invalid prior_estimator
+commit [tab] val_sharpe [tab] status [tab] axis [tab] baseline_ref [tab] hypothesis [tab] description
+a1b2c3d [tab] 0.452123 [tab] keep [tab] baseline [tab] inverse_volatility_baseline [tab] Mean-risk should beat inverse volatility [tab] baseline MeanRisk
+b2c3d4e [tab] 0.481200 [tab] keep [tab] covariance [tab] mean_risk_baseline [tab] Gerber covariance may be more robust [tab] RiskBudgeting + GerberCovariance
+c3d4e5f [tab] 0.440000 [tab] discard [tab] optimizer [tab] mean_risk_baseline [tab] HRP may diversify better [tab] HierarchicalRiskParity (worse)
+d4e5f6g [tab] -999.0 [tab] crash [tab] prior [tab] mean_risk_baseline [tab] factor prior may help [tab] invalid prior_estimator
 ```
+
+The script prints a `results_tsv_row:` line to make this logging easier and more consistent.
 
 ## The experiment loop
 
@@ -169,13 +250,15 @@ LOOP:
 2. Edit `train.py` with one experimental idea.
    - Usually this means the model family, prior, risk measure, constraints, or a new clean skfolio feature branch.
    - More rarely it means strengthening the validation suite.
+   - Update the experiment metadata so the hypothesis and changed axis are explicit.
 3. `git commit`
 4. Run: `uv run train.py > run.log 2>&1`
-5. Read results: `grep "^val_sharpe:\|^failed_cases:\|^total_seconds:" run.log`
+5. Read results: `grep "^val_sharpe:\|^failed_cases:\|^robust_pass:\|^total_seconds:" run.log`
 6. If the run crashed (no val_sharpe), run `tail -n 50 run.log` to debug. Fix trivial bugs and re-run; if the idea is broken, log as `crash` and move on.
-7. Append the row to `results.tsv`.
-8. If val_sharpe **improved (higher)**, keep the commit and advance.
-9. If val_sharpe stayed the same or decreased, `git reset --hard` back and discard.
+7. Read the family summary, direction summary, and gain attribution tables. Make sure the improvement is broad enough to be believable.
+8. Append the row to `results.tsv`.
+9. If val_sharpe improved and the robustness gates still pass, keep the commit and advance.
+10. If val_sharpe stayed the same or decreased, or robustness got materially worse, discard and move on.
 
 You are an autonomous researcher: keep improvements, discard regressions, advance the branch. Rewind only sparingly if stuck.
 
