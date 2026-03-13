@@ -23,7 +23,9 @@ UNIVERSAL_PORTFOLIO_DATA_URL = (
     "https://raw.githubusercontent.com/CarloNicolini/skfolio/"
     "universal_portfolio/src/skfolio/datasets/data"
 )
-SKFOLIO_DATASETS_URL = "https://raw.githubusercontent.com/skfolio/skfolio-datasets/main/datasets"
+SKFOLIO_DATASETS_URL = (
+    "https://raw.githubusercontent.com/skfolio/skfolio-datasets/main/datasets"
+)
 
 
 @dataclass(frozen=True)
@@ -54,12 +56,6 @@ PRICE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
         name="factors",
         filename="factors_dataset.csv.gz",
         url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/factors_dataset.csv.gz",
-        kind="prices",
-    ),
-    RemoteDatasetSpec(
-        name="sp500_index",
-        filename="sp500_index.csv.gz",
-        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/sp500_index.csv.gz",
         kind="prices",
     ),
     RemoteDatasetSpec(
@@ -225,13 +221,6 @@ def load_factors_dataset(
     return _load_price_dataset("factors", data_home, download_if_missing)
 
 
-def load_sp500_index_dataset(
-    data_home: str | Path | None = None,
-    download_if_missing: bool = True,
-) -> pd.DataFrame:
-    return _load_price_dataset("sp500_index", data_home, download_if_missing)
-
-
 def load_ftse100_dataset(
     data_home: str | Path | None = None,
     download_if_missing: bool = True,
@@ -313,7 +302,9 @@ def extract_path_sharpes(portfolios: object) -> np.ndarray:
     """
     if hasattr(portfolios, "annualized_sharpe_ratio"):
         return np.asarray([float(portfolios.annualized_sharpe_ratio)], dtype=float)
-    return np.asarray(portfolios.measures(RatioMeasure.ANNUALIZED_SHARPE_RATIO), dtype=float)
+    return np.asarray(
+        portfolios.measures(RatioMeasure.ANNUALIZED_SHARPE_RATIO), dtype=float
+    )
 
 
 def describe_datasets() -> pd.DataFrame:
