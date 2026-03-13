@@ -1,3 +1,5 @@
+![autoresearch-skfolio](./autoresearch-skfolio-image.png)
+
 # autoresearch (quantitative finance)
 
 Autonomous portfolio research: an agent edits a single training script to improve out-of-sample portfolio performance. The setup uses [skfolio](https://skfolio.org/) for portfolio optimization and runs fixed, broad validation over multiple datasets, their reversed-return counterparts, and more than one cross-validation regime.
