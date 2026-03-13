@@ -64,12 +64,6 @@ PRICE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
         url=f"{SKFOLIO_DATASETS_URL}/ftse100_dataset.csv.gz",
         kind="prices",
     ),
-    RemoteDatasetSpec(
-        name="nasdaq",
-        filename="nasdaq_dataset.csv.gz",
-        url=f"{SKFOLIO_DATASETS_URL}/nasdaq_dataset.csv.gz",
-        kind="prices",
-    ),
 )
 
 RELATIVE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
@@ -226,13 +220,6 @@ def load_ftse100_dataset(
     download_if_missing: bool = True,
 ) -> pd.DataFrame:
     return _load_price_dataset("ftse100", data_home, download_if_missing)
-
-
-def load_nasdaq_dataset(
-    data_home: str | Path | None = None,
-    download_if_missing: bool = True,
-) -> pd.DataFrame:
-    return _load_price_dataset("nasdaq", data_home, download_if_missing)
 
 
 def _load_relatives_dataset(
