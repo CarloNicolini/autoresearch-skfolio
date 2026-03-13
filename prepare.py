@@ -1,22 +1,39 @@
 """
 Dataset and scoring helpers for autonomous portfolio research.
 
-`prepare.py` stays intentionally simple:
-- load a fixed suite of skfolio datasets
-- build reversed counterparts
-- expose helpers used by `train.py`
+`prepare.py` keeps one small job:
+- download/cache the dataset `.csv.gz` assets we rely on
+- convert price datasets to net returns
+- expose both regular and time-reversed cases for `train.py`
 """
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import urllib.request
 
 import numpy as np
 import pandas as pd
 
-from skfolio.datasets import load_factors_dataset, load_sp500_dataset
 from skfolio.measures import RatioMeasure
 from skfolio.preprocessing import prices_to_returns
 
 TIME_BUDGET = 300
+UNIVERSAL_PORTFOLIO_DATA_URL = (
+    "https://raw.githubusercontent.com/CarloNicolini/skfolio/"
+    "universal_portfolio/src/skfolio/datasets/data"
+)
+SKFOLIO_DATASETS_URL = "https://raw.githubusercontent.com/skfolio/skfolio-datasets/main/datasets"
+
+
+@dataclass(frozen=True)
+class RemoteDatasetSpec:
+    name: str
+    filename: str
+    url: str
+    kind: str
+    has_datetime_index: bool = True
+    synthetic_start: str | None = None
 
 
 @dataclass(frozen=True)
@@ -26,39 +43,245 @@ class DatasetCase:
     y: pd.DataFrame | None = None
 
 
-def _negate_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
+PRICE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
+    RemoteDatasetSpec(
+        name="sp500",
+        filename="sp500_dataset.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/sp500_dataset.csv.gz",
+        kind="prices",
+    ),
+    RemoteDatasetSpec(
+        name="factors",
+        filename="factors_dataset.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/factors_dataset.csv.gz",
+        kind="prices",
+    ),
+    RemoteDatasetSpec(
+        name="sp500_index",
+        filename="sp500_index.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/sp500_index.csv.gz",
+        kind="prices",
+    ),
+    RemoteDatasetSpec(
+        name="ftse100",
+        filename="ftse100_dataset.csv.gz",
+        url=f"{SKFOLIO_DATASETS_URL}/ftse100_dataset.csv.gz",
+        kind="prices",
+    ),
+    RemoteDatasetSpec(
+        name="nasdaq",
+        filename="nasdaq_dataset.csv.gz",
+        url=f"{SKFOLIO_DATASETS_URL}/nasdaq_dataset.csv.gz",
+        kind="prices",
+    ),
+)
+
+RELATIVE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
+    RemoteDatasetSpec(
+        name="cmc20_relatives",
+        filename="cmc20_relatives.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/cmc20_relatives.csv.gz",
+        kind="relatives",
+        has_datetime_index=False,
+    ),
+    RemoteDatasetSpec(
+        name="djia_relatives",
+        filename="djia_relatives.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/djia_relatives.csv.gz",
+        kind="relatives",
+        has_datetime_index=False,
+        synthetic_start="2001-01-14",
+    ),
+    RemoteDatasetSpec(
+        name="msci_relatives",
+        filename="msci_relatives.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/msci_relatives.csv.gz",
+        kind="relatives",
+        has_datetime_index=False,
+        synthetic_start="2006-04-01",
+    ),
+    RemoteDatasetSpec(
+        name="nyse_o_relatives",
+        filename="nyse_o_relatives.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/nyse_o_relatives.csv.gz",
+        kind="relatives",
+        has_datetime_index=False,
+    ),
+    RemoteDatasetSpec(
+        name="sp500_relatives",
+        filename="sp500_relatives.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/sp500_relatives.csv.gz",
+        kind="relatives",
+        has_datetime_index=False,
+    ),
+    RemoteDatasetSpec(
+        name="tse_relatives",
+        filename="tse_relatives.csv.gz",
+        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/tse_relatives.csv.gz",
+        kind="relatives",
+        has_datetime_index=False,
+    ),
+)
+
+PRICE_DATASET_BY_NAME = {spec.name: spec for spec in PRICE_DATASETS}
+
+
+def get_data_home(data_home: str | Path | None = None) -> Path:
+    if data_home is None:
+        data_home = os.environ.get("SKFOLIO_DATA", os.path.join("~", "skfolio_data"))
+    path = Path(data_home).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _download_dataset_file(
+    spec: RemoteDatasetSpec,
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> Path:
+    target_path = get_data_home(data_home) / spec.filename
+    if target_path.exists():
+        return target_path
+    if not download_if_missing:
+        raise OSError(f"Dataset not found locally: {target_path}")
+    urllib.request.urlretrieve(spec.url, target_path)
+    return target_path
+
+
+def _read_dataset_frame(
+    spec: RemoteDatasetSpec,
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    path = _download_dataset_file(
+        spec,
+        data_home=data_home,
+        download_if_missing=download_if_missing,
+    )
+    frame = pd.read_csv(path, index_col=0, compression="gzip")
+    if spec.has_datetime_index:
+        frame.index = pd.to_datetime(frame.index)
+    if spec.synthetic_start is not None:
+        frame["Date"] = pd.date_range(
+            start=spec.synthetic_start,
+            periods=len(frame),
+            freq="B",
+            name="Date",
+        )
+        frame = frame.set_index("Date")
+    return frame
+
+
+def _reverse_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
     if frame is None:
         return None
-    return pd.DataFrame(-frame.to_numpy(), index=frame.index, columns=frame.columns)
+    return frame.iloc[::-1].copy()
+
+
+def _load_price_dataset(
+    name: str,
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    spec = PRICE_DATASET_BY_NAME[name]
+    prices = _read_dataset_frame(
+        spec,
+        data_home=data_home,
+        download_if_missing=download_if_missing,
+    )
+    return prices_to_returns(prices)
+
+
+def load_sp500_dataset(
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    return _load_price_dataset("sp500", data_home, download_if_missing)
+
+
+def load_factors_dataset(
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    return _load_price_dataset("factors", data_home, download_if_missing)
+
+
+def load_sp500_index_dataset(
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    return _load_price_dataset("sp500_index", data_home, download_if_missing)
+
+
+def load_ftse100_dataset(
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    return _load_price_dataset("ftse100", data_home, download_if_missing)
+
+
+def load_nasdaq_dataset(
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    return _load_price_dataset("nasdaq", data_home, download_if_missing)
+
+
+def _load_relatives_dataset(
+    spec: RemoteDatasetSpec,
+    data_home: str | Path | None = None,
+    download_if_missing: bool = True,
+) -> pd.DataFrame:
+    relatives = _read_dataset_frame(
+        spec,
+        data_home=data_home,
+        download_if_missing=download_if_missing,
+    )
+    return relatives - 1.0
 
 
 def _load_sp500_and_factors() -> tuple[pd.DataFrame, pd.DataFrame]:
-    prices = load_sp500_dataset()
-    factor_prices = load_factors_dataset()
-    X = prices_to_returns(prices)
-    factors = prices_to_returns(factor_prices)
-    common_index = X.index.intersection(factors.index)
-    return X.loc[common_index], factors.loc[common_index]
+    sp500_returns = load_sp500_dataset()
+    factor_returns = load_factors_dataset()
+    common_index = sp500_returns.index.intersection(factor_returns.index)
+    return sp500_returns.loc[common_index], factor_returns.loc[common_index]
 
 
 def get_all_datasets() -> list[DatasetCase]:
     """
-    Load the fixed dataset suite.
+    Load the dataset suite used by the research loop.
 
-    We keep both an asset-only S&P 500 case and a factor-aware S&P 500 case so
-    the agent can explore both standard priors and `FactorModel`-style priors.
+    The suite mixes:
+    - price-based universes converted to net returns
+    - price-relative universes converted to net returns
+    - a factor-aware S&P 500 case
+    - a reversed-time version of every case
     """
     sp500_returns, sp500_factors = _load_sp500_and_factors()
-    factor_returns = prices_to_returns(load_factors_dataset())
-
-    return [
+    cases = [
         DatasetCase("sp500", sp500_returns),
-        DatasetCase("sp500_reversed", _negate_frame(sp500_returns)),
+        DatasetCase("sp500_reversed", _reverse_frame(sp500_returns)),
         DatasetCase("sp500_factor", sp500_returns, sp500_factors),
-        DatasetCase("sp500_factor_reversed", _negate_frame(sp500_returns), _negate_frame(sp500_factors)),
-        DatasetCase("factors", factor_returns),
-        DatasetCase("factors_reversed", _negate_frame(factor_returns)),
+        DatasetCase(
+            "sp500_factor_reversed",
+            _reverse_frame(sp500_returns),
+            _reverse_frame(sp500_factors),
+        ),
     ]
+
+    for spec in PRICE_DATASETS:
+        if spec.name == "sp500":
+            continue
+        returns = _load_price_dataset(spec.name)
+        cases.append(DatasetCase(spec.name, returns))
+        cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
+
+    for spec in RELATIVE_DATASETS:
+        returns = _load_relatives_dataset(spec)
+        cases.append(DatasetCase(spec.name, returns))
+        cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
+
+    return cases
 
 
 def extract_path_sharpes(portfolios: object) -> np.ndarray:
