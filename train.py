@@ -7,6 +7,7 @@ Single-file autonomous portfolio research surface.
 """
 
 from dataclasses import asdict, dataclass
+import random
 import time
 
 import numpy as np
@@ -38,6 +39,9 @@ from prepare import DatasetCase, TIME_BUDGET, extract_path_sharpes, get_all_data
 
 @dataclass(frozen=True)
 class ExperimentConfig:
+    # This dataclass is the primary research surface: agents can mutate these
+    # fields to explore new estimators, priors, constraints, and portfolio
+    # construction choices without rewriting the evaluation loop.
     model_family: str = "mean_risk"
     objective: str = "maximize_ratio"
     risk_measure: str = "variance"
@@ -50,11 +54,14 @@ class ExperimentConfig:
     max_long: float = 0.20
     max_short: float = 0.20
     l2_coef: float = 0.01
-    n_jobs: int = -1
+    # Prefer deterministic execution over maximum throughput.
+    n_jobs: int = 1
 
 
 @dataclass(frozen=True)
 class ValidationConfig:
+    # Keep validation separate from model design so strategy changes can be
+    # compared under a stable, reproducible protocol.
     walk_forward_train_size: int = 252
     walk_forward_test_size: int = 63
     purged_n_folds: int = 8
@@ -64,7 +71,7 @@ class ValidationConfig:
     randomized_subsamples: int = 6
     randomized_window_size: int = 756
     randomized_min_assets: int = 8
-    randomized_seed: int = 0
+    seed: int = 0
     fail_case_score: float = -5.0
 
 
@@ -74,11 +81,22 @@ class EvaluationSummary:
     details: pd.DataFrame
 
 
+# These defaults define the current research baseline. Future agent iterations
+# should update them deliberately so comparisons stay easy to interpret.
 EXPERIMENT = ExperimentConfig()
 VALIDATION = ValidationConfig()
 
 
+def set_global_seed(seed: int) -> None:
+    # Seed the common random generators used directly in this script and by the
+    # randomized validation helpers.
+    random.seed(seed)
+    np.random.seed(seed)
+
+
 def build_mu_estimator(name: str):
+    # Keep the estimator factories small and explicit: adding a new option should
+    # mean adding one new branch and a clear name in the config.
     if name == "none":
         return None
     if name == "shrunk":
@@ -99,6 +117,8 @@ def build_covariance_estimator(name: str):
 
 
 def build_empirical_prior(config: ExperimentConfig):
+    # Centralize prior wiring so changes to the return/covariance stack only need
+    # to happen in one place.
     return EmpiricalPrior(
         mu_estimator=build_mu_estimator(config.mu_estimator),
         covariance_estimator=build_covariance_estimator(config.covariance_estimator),
@@ -106,7 +126,7 @@ def build_empirical_prior(config: ExperimentConfig):
 
 
 def build_prior(config: ExperimentConfig, dataset: DatasetCase):
-    # Dataset-aware fallback is the key simplification: one experiment config can
+    # Dataset-aware fallback is the key simplification: one research config can
     # still exploit factor-aware priors where targets exist without breaking
     # asset-only datasets.
     if config.prior_kind == "factor" and dataset.y is not None:
@@ -117,6 +137,8 @@ def build_prior(config: ExperimentConfig, dataset: DatasetCase):
 
 
 def build_mean_risk(config: ExperimentConfig, dataset: DatasetCase):
+    # This is the current baseline optimizer and the simplest place to test new
+    # objective/risk/constraint ideas.
     min_weights = -config.max_short if config.allow_short else 0.0
     return MeanRisk(
         objective_function=ObjectiveFunction[config.objective.upper()],
@@ -130,6 +152,8 @@ def build_mean_risk(config: ExperimentConfig, dataset: DatasetCase):
 
 
 def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
+    # Alternative construction step: same prior plumbing, different portfolio
+    # assembly logic.
     return RiskBudgeting(
         risk_measure=RiskMeasure[config.risk_measure.upper()],
         prior_estimator=build_prior(config, dataset),
@@ -138,6 +162,8 @@ def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
 
 
 def build_hierarchical_risk_parity(config: ExperimentConfig, dataset: DatasetCase):
+    # Hierarchical methods let the agent explore clustering-based diversification
+    # without changing the broader evaluation protocol.
     return HierarchicalRiskParity(
         risk_measure=RiskMeasure[config.risk_measure.upper()],
         prior_estimator=build_prior(config, dataset),
@@ -146,6 +172,9 @@ def build_hierarchical_risk_parity(config: ExperimentConfig, dataset: DatasetCas
 
 
 def build_nested_clusters(config: ExperimentConfig, dataset: DatasetCase):
+    # This is already a multi-step strategy: an inner optimizer builds cluster
+    # sleeves and an outer optimizer allocates across them. It is a useful
+    # template for richer composed research pipelines.
     return NestedClustersOptimization(
         inner_estimator=MeanRisk(
             objective_function=ObjectiveFunction.MAXIMIZE_RATIO,
@@ -163,6 +192,8 @@ def build_nested_clusters(config: ExperimentConfig, dataset: DatasetCase):
 
 
 def build_estimator(config: ExperimentConfig, dataset: DatasetCase):
+    # Model-family dispatch is intentionally explicit so the searchable strategy
+    # space stays inspectable and diff-friendly.
     builders = {
         "mean_risk": build_mean_risk,
         "risk_budgeting": build_risk_budgeting,
@@ -176,6 +207,8 @@ def build_estimator(config: ExperimentConfig, dataset: DatasetCase):
 
 
 def build_model(config: ExperimentConfig, dataset: DatasetCase):
+    # The full model may be a plain estimator or a multi-step pipeline. This is
+    # the natural extension point for richer research workflows.
     estimator = build_estimator(config, dataset)
     if not config.use_preselection:
         return estimator
@@ -183,6 +216,8 @@ def build_model(config: ExperimentConfig, dataset: DatasetCase):
     set_config(transform_output="pandas")
     return Pipeline(
         [
+            # Keep pre-selection explicit in the pipeline so it is evaluated
+            # inside CV rather than leaking information across folds.
             ("pre_selection", SelectKExtremes(k=config.preselection_k, highest=True)),
             ("optimization", estimator),
         ]
@@ -190,6 +225,8 @@ def build_model(config: ExperimentConfig, dataset: DatasetCase):
 
 
 def get_walk_forward_cv(validation: ValidationConfig) -> WalkForward:
+    # Walk-forward approximates the standard research workflow: fit on the past,
+    # evaluate on the next block, then roll forward.
     return WalkForward(
         train_size=validation.walk_forward_train_size,
         test_size=validation.walk_forward_test_size,
@@ -197,6 +234,8 @@ def get_walk_forward_cv(validation: ValidationConfig) -> WalkForward:
 
 
 def get_combinatorial_purged_cv(validation: ValidationConfig) -> CombinatorialPurgedCV:
+    # Purged CV is the more conservative protocol for time series because it
+    # reduces leakage from overlapping samples and nearby observations.
     return CombinatorialPurgedCV(
         n_folds=validation.purged_n_folds,
         n_test_folds=validation.purged_n_test_folds,
@@ -206,6 +245,8 @@ def get_combinatorial_purged_cv(validation: ValidationConfig) -> CombinatorialPu
 
 
 def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfig):
+    # This stress test adds controlled randomness over windows and asset subsets.
+    # With a fixed seed it remains reproducible while still probing robustness.
     if dataset.y is not None or dataset.X.shape[1] < validation.randomized_min_assets:
         return None
 
@@ -216,11 +257,13 @@ def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfi
         n_subsamples=validation.randomized_subsamples,
         asset_subset_size=asset_subset_size,
         window_size=window_size,
-        random_state=validation.randomized_seed,
+        random_state=validation.seed,
     )
 
 
 def iter_validation_cases(validation: ValidationConfig):
+    # Every dataset is evaluated under the same family of validation schemes so a
+    # single strategy is not overfit to one market regime or one test protocol.
     for dataset in get_all_datasets():
         yield dataset, "walk_forward", get_walk_forward_cv(validation)
         yield dataset, "combinatorial_purged", get_combinatorial_purged_cv(validation)
@@ -230,6 +273,8 @@ def iter_validation_cases(validation: ValidationConfig):
 
 
 def summarize_case_scores(path_scores: np.ndarray, fail_case_score: float) -> dict[str, float | int]:
+    # Collapse each validation case to a small set of comparable diagnostics plus
+    # one scalar score for the outer research loop.
     finite_scores = path_scores[np.isfinite(path_scores)]
     if finite_scores.size == 0:
         return {
@@ -255,6 +300,10 @@ def evaluate_experiment(
     validation: ValidationConfig = VALIDATION,
     timeout_seconds: float | None = TIME_BUDGET,
 ) -> EvaluationSummary:
+    # This is the core benchmark harness: build one strategy, run it across the
+    # full validation matrix, and return both the aggregate score and per-case
+    # diagnostics for later inspection.
+    set_global_seed(validation.seed)
     rows: list[dict[str, str | float | int | bool]] = []
     start = time.time()
 
@@ -265,9 +314,14 @@ def evaluate_experiment(
         error = ""
         try:
             model = build_model(config, dataset)
+            # `cross_val_predict` is the key abstraction here: any estimator or
+            # pipeline that follows the expected API can be dropped into the same
+            # evaluation harness.
             portfolios = cross_val_predict(model, dataset.X, y=dataset.y, cv=cv, n_jobs=config.n_jobs)
             path_scores = extract_path_sharpes(portfolios)
         except Exception as exc:
+            # Research runs should fail soft: record the issue, score the case as
+            # failed, and continue so broad searches do not stop on one bad idea.
             path_scores = np.asarray([], dtype=float)
             error = f"{type(exc).__name__}: {exc}"
 
@@ -292,6 +346,8 @@ def evaluate_experiment(
 
 
 def format_details_table(summary: EvaluationSummary) -> str:
+    # Keep the console output stable and human-readable because agents and humans
+    # will both use it as a lightweight audit trail.
     details = summary.details.copy()
     if details.empty:
         return "(no completed evaluation cases)"
@@ -303,6 +359,8 @@ def format_details_table(summary: EvaluationSummary) -> str:
 
 
 def main():
+    # `main` makes the file runnable as a standalone benchmark script, which is
+    # useful for quick baselines before folding changes into larger agent loops.
     t_start = time.time()
     summary = evaluate_experiment(EXPERIMENT, VALIDATION, timeout_seconds=TIME_BUDGET)
     total_seconds = time.time() - t_start

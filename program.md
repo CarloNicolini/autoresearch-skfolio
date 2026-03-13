@@ -141,23 +141,22 @@ grep "^val_sharpe:" run.log
 When an experiment finishes, append one row to `results.tsv` (tab-separated). Header and columns:
 
 ```text
-commit [tab] val_sharpe [tab] memory_gb [tab] status [tab] description
+commit [tab] val_sharpe [tab] status [tab] description
 ```
 
 1. Git commit hash (short, 7 chars)
 2. val_sharpe (e.g. 0.452123) — use -999.0 or similar for crashes
-3. memory_gb: use 0.0 (no GPU tracking in this setup)
-4. status: `keep`, `discard`, or `crash`
-5. Short description of what this experiment tried
+3. status: `keep`, `discard`, or `crash`
+4. Short description of what this experiment tried
 
 Example:
 
 ```text
-commit [tab] val_sharpe [tab] memory_gb [tab] status [tab] description
-a1b2c3d [tab] 0.452123 [tab] 0.0 [tab] keep [tab] baseline MeanRisk
-b2c3d4e [tab] 0.481200 [tab] 0.0 [tab] keep [tab] RiskBudgeting + GerberCovariance
-c3d4e5f [tab] 0.440000 [tab] 0.0 [tab] discard [tab] HierarchicalRiskParity (worse)
-d4e5f6g [tab] -999.0 [tab] 0.0 [tab] crash [tab] invalid prior_estimator
+commit [tab] val_sharpe [tab] status [tab] description
+a1b2c3d [tab] 0.452123 [tab] keep [tab] baseline MeanRisk
+b2c3d4e [tab] 0.481200 [tab] keep [tab] RiskBudgeting + GerberCovariance
+c3d4e5f [tab] 0.440000 [tab] discard [tab] HierarchicalRiskParity (worse)
+d4e5f6g [tab] -999.0 [tab] crash [tab] invalid prior_estimator
 ```
 
 ## The experiment loop
