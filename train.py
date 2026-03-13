@@ -13,7 +13,9 @@ import time
 
 import numpy as np
 import pandas as pd
+import sklearn.utils.validation as skv
 from sklearn import set_config
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import KFold
 from sklearn.pipeline import Pipeline
 
@@ -24,7 +26,18 @@ from skfolio.model_selection import (
     WalkForward,
     cross_val_predict,
 )
-from skfolio.moments import DenoiseCovariance, EWMu, GerberCovariance, ShrunkMu
+from skfolio.moments import (
+    DenoiseCovariance,
+    EWCovariance,
+    EWMu,
+    EmpiricalCovariance,
+    EmpiricalMu,
+    GerberCovariance,
+    LedoitWolf,
+    ShrunkMu,
+)
+from skfolio.moments.covariance._base import BaseCovariance
+from skfolio.moments.expected_returns._base import BaseMu
 from skfolio.optimization import (
     EqualWeighted,
     HierarchicalRiskParity,
@@ -34,7 +47,7 @@ from skfolio.optimization import (
     ObjectiveFunction,
     RiskBudgeting,
 )
-from skfolio.pre_selection import SelectKExtremes
+from skfolio.pre_selection import SelectComplete, SelectKExtremes
 from skfolio.prior import EmpiricalPrior, FactorModel
 
 from prepare import DatasetCase, TIME_BUDGET, extract_path_sharpes, get_all_datasets
@@ -52,6 +65,7 @@ class ExperimentConfig:
     baseline_reference: str = "inverse_volatility_baseline"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
+    nan_handling: str = "pipeline"
     preprocessor_kind: str = "none"
     pre_selector_kind: str = "none"
     optimizer_kind: str = "mean_risk"
@@ -59,12 +73,16 @@ class ExperimentConfig:
     objective: str = "maximize_ratio"
     risk_measure: str = "variance"
     prior_kind: str = "empirical"
-    mu_estimator: str = "shrunk"
-    covariance_estimator: str = "denoise"
+    mu_estimator: str = "empirical"
+    covariance_estimator: str = "ledoit_wolf"
+    select_complete_internal_nan: bool = False
+    zero_imputation_value: float = 0.0
     preselection_k: int = 10
     allow_short: bool = False
     max_long: float = 0.20
     max_short: float = 0.20
+    transaction_costs: float = 0.0
+    l1_coef: float = 0.0
     l2_coef: float = 0.01
     # Prefer deterministic execution over maximum throughput.
     n_jobs: int = 1
@@ -87,6 +105,8 @@ class ValidationConfig:
     fail_case_score: float = -5.0
     include_baseline_ladder: bool = True
     baseline_timeout_seconds: float | None = 120.0
+    fast_fail_case_count: int = 2
+    fast_fail_score_threshold: float = -2.0
 
 
 @dataclass(frozen=True)
@@ -115,12 +135,73 @@ class EvaluationSummary:
     family_gain_attribution: pd.DataFrame
 
 
-# These defaults define the current research baseline. Future agent iterations
-# should update them deliberately so comparisons stay easy to interpret.
+# Hyperparameters (edit directly, no CLI flags). Future agent iterations should
+# update these defaults deliberately so comparisons stay easy to interpret.
 EXPERIMENT = ExperimentConfig()
 VALIDATION = ValidationConfig()
 ROBUSTNESS = RobustnessConfig()
 REPORTING = ReportingConfig()
+
+
+class PairwiseEmpiricalMu(BaseMu):
+    """Fold-local expected returns using all available observations per asset."""
+
+    def __init__(self, window_size: int | None = None):
+        self.window_size = window_size
+
+    def fit(self, X, y=None):
+        X = skv.validate_data(self, X, ensure_all_finite="allow-nan")
+        if self.window_size is not None:
+            X = X[-self.window_size :]
+        self.mu_ = np.nanmean(X, axis=0)
+        if np.isnan(self.mu_).any():
+            raise ValueError(
+                "PairwiseEmpiricalMu requires at least one finite observation per asset."
+            )
+        return self
+
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.input_tags.allow_nan = True
+        return tags
+
+
+class PairwiseEmpiricalCovariance(BaseCovariance):
+    """Pairwise-complete covariance that keeps NaNs inside the training fold local."""
+
+    def __init__(
+        self,
+        window_size: int | None = None,
+        ddof: int = 1,
+        nearest: bool = True,
+        higham: bool = False,
+        higham_max_iteration: int = 100,
+    ):
+        super().__init__(
+            nearest=nearest,
+            higham=higham,
+            higham_max_iteration=higham_max_iteration,
+        )
+        self.window_size = window_size
+        self.ddof = ddof
+
+    def fit(self, X, y=None):
+        X = skv.validate_data(self, X, ensure_all_finite="allow-nan")
+        if self.window_size is not None:
+            X = X[-int(self.window_size) :]
+        covariance = pd.DataFrame(X).cov(ddof=self.ddof).to_numpy(dtype=float)
+        if np.isnan(covariance).any():
+            raise ValueError(
+                "PairwiseEmpiricalCovariance requires overlapping finite observations "
+                "for every asset pair."
+            )
+        self._set_covariance(covariance)
+        return self
+
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.input_tags.allow_nan = True
+        return tags
 
 
 def get_baseline_ladder() -> list[ExperimentConfig]:
@@ -187,11 +268,20 @@ def set_global_seed(seed: int) -> None:
     np.random.seed(seed)
 
 
-def build_mu_estimator(name: str):
+def build_mu_estimator(config: ExperimentConfig):
     # Keep the estimator factories small and explicit: adding a new option should
     # mean adding one new branch and a clear name in the config.
+    name = config.mu_estimator
     if name == "none":
         return None
+    if config.nan_handling == "native":
+        if name == "empirical":
+            return PairwiseEmpiricalMu()
+        raise ValueError(
+            "nan_handling='native' only supports mu_estimator in {'none', 'empirical'}."
+        )
+    if name == "empirical":
+        return EmpiricalMu()
     if name == "shrunk":
         return ShrunkMu()
     if name == "ewm":
@@ -199,9 +289,25 @@ def build_mu_estimator(name: str):
     raise ValueError(f"Unknown mu_estimator: {name}")
 
 
-def build_covariance_estimator(name: str):
+def build_covariance_estimator(config: ExperimentConfig):
+    name = config.covariance_estimator
     if name == "none":
         return None
+    if config.nan_handling == "native":
+        if name == "empirical":
+            return PairwiseEmpiricalCovariance()
+        if name == "denoise":
+            return DenoiseCovariance(covariance_estimator=PairwiseEmpiricalCovariance())
+        raise ValueError(
+            "nan_handling='native' only supports covariance_estimator in "
+            "{'none', 'empirical', 'denoise'}."
+        )
+    if name == "empirical":
+        return EmpiricalCovariance()
+    if name == "ledoit_wolf":
+        return LedoitWolf()
+    if name == "ewm":
+        return EWCovariance(alpha=0.10)
     if name == "denoise":
         return DenoiseCovariance()
     if name == "gerber":
@@ -213,8 +319,8 @@ def build_empirical_prior(config: ExperimentConfig):
     # Centralize prior wiring so changes to the return/covariance stack only need
     # to happen in one place.
     return EmpiricalPrior(
-        mu_estimator=build_mu_estimator(config.mu_estimator),
-        covariance_estimator=build_covariance_estimator(config.covariance_estimator),
+        mu_estimator=build_mu_estimator(config),
+        covariance_estimator=build_covariance_estimator(config),
     )
 
 
@@ -250,6 +356,8 @@ def build_mean_risk(config: ExperimentConfig, dataset: DatasetCase):
         prior_estimator=build_prior(config, dataset),
         min_weights=min_weights,
         max_weights=config.max_long,
+        transaction_costs=config.transaction_costs,
+        l1_coef=config.l1_coef,
         l2_coef=config.l2_coef,
         raise_on_failure=False,
     )
@@ -261,6 +369,7 @@ def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
     return RiskBudgeting(
         risk_measure=RiskMeasure[config.risk_measure.upper()],
         prior_estimator=build_prior(config, dataset),
+        transaction_costs=config.transaction_costs,
         raise_on_failure=False,
     )
 
@@ -271,6 +380,7 @@ def build_hierarchical_risk_parity(config: ExperimentConfig, dataset: DatasetCas
     return HierarchicalRiskParity(
         risk_measure=RiskMeasure[config.risk_measure.upper()],
         prior_estimator=build_prior(config, dataset),
+        transaction_costs=config.transaction_costs,
         raise_on_failure=False,
     )
 
@@ -286,10 +396,16 @@ def build_nested_clusters(config: ExperimentConfig, dataset: DatasetCase):
             prior_estimator=build_prior(config, dataset),
             min_weights=0.0,
             max_weights=0.50,
+            transaction_costs=config.transaction_costs,
+            l1_coef=config.l1_coef,
             l2_coef=config.l2_coef,
             raise_on_failure=False,
         ),
-        outer_estimator=RiskBudgeting(risk_measure=RiskMeasure.VARIANCE, raise_on_failure=False),
+        outer_estimator=RiskBudgeting(
+            risk_measure=RiskMeasure.VARIANCE,
+            transaction_costs=config.transaction_costs,
+            raise_on_failure=False,
+        ),
         cv=KFold(n_splits=3, shuffle=False),
         n_jobs=config.n_jobs,
     )
@@ -315,19 +431,49 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
 def build_preprocessor_steps(config: ExperimentConfig, dataset: DatasetCase) -> list[tuple[str, object]]:
     # This slot exists so future agents can add deterministic feature transforms
     # without rewriting the rest of the pipeline builder.
+    steps: list[tuple[str, object]] = []
+    if config.nan_handling == "pipeline":
+        set_config(transform_output="pandas")
+        steps.append(
+            (
+                "fill_missing",
+                SimpleImputer(
+                    strategy="constant",
+                    fill_value=config.zero_imputation_value,
+                ),
+            )
+        )
+    elif config.nan_handling not in {"native", "none"}:
+        raise ValueError(f"Unknown nan_handling: {config.nan_handling}")
     if config.preprocessor_kind == "none":
-        return []
+        return steps
     raise ValueError(f"Unknown preprocessor_kind: {config.preprocessor_kind}")
 
 
 def build_pre_selector_steps(config: ExperimentConfig, dataset: DatasetCase) -> list[tuple[str, object]]:
     # Keep pre-selection explicit in the pipeline so it is evaluated inside CV
     # rather than leaking information across folds.
+    steps: list[tuple[str, object]] = []
+    if config.nan_handling in {"pipeline", "native"}:
+        set_config(transform_output="pandas")
+        steps.append(
+            (
+                "select_complete",
+                SelectComplete(
+                    drop_assets_with_internal_nan=config.select_complete_internal_nan
+                ),
+            )
+        )
+    elif config.nan_handling != "none":
+        raise ValueError(f"Unknown nan_handling: {config.nan_handling}")
     if config.pre_selector_kind == "none":
-        return []
+        return steps
     if config.pre_selector_kind == "k_extremes":
         set_config(transform_output="pandas")
-        return [("pre_selection", SelectKExtremes(k=config.preselection_k, highest=True))]
+        steps.append(
+            ("pre_selection", SelectKExtremes(k=config.preselection_k, highest=True))
+        )
+        return steps
     raise ValueError(f"Unknown pre_selector_kind: {config.pre_selector_kind}")
 
 
@@ -343,8 +489,8 @@ def build_model(config: ExperimentConfig, dataset: DatasetCase):
     # The full model may be a plain estimator or a multi-step pipeline. This is
     # the natural extension point for richer research workflows.
     steps = []
-    steps.extend(build_preprocessor_steps(config, dataset))
     steps.extend(build_pre_selector_steps(config, dataset))
+    steps.extend(build_preprocessor_steps(config, dataset))
     steps.append(("optimization", build_optimizer(config, dataset)))
     steps.extend(build_post_processor_steps(config, dataset))
     if len(steps) == 1:
@@ -361,15 +507,35 @@ def get_walk_forward_cv(validation: ValidationConfig) -> WalkForward:
     )
 
 
-def get_combinatorial_purged_cv(validation: ValidationConfig) -> CombinatorialPurgedCV:
+def has_usable_splits(cv, X: pd.DataFrame) -> bool:
+    try:
+        splits = list(cv.split(X))
+    except Exception:
+        return False
+    if not splits:
+        return False
+    return all(len(split[0]) > 0 for split in splits)
+
+
+def get_combinatorial_purged_cv(
+    dataset: DatasetCase,
+    validation: ValidationConfig,
+) -> CombinatorialPurgedCV | None:
     # Purged CV is the more conservative protocol for time series because it
     # reduces leakage from overlapping samples and nearby observations.
-    return CombinatorialPurgedCV(
-        n_folds=validation.purged_n_folds,
-        n_test_folds=validation.purged_n_test_folds,
-        purged_size=validation.purged_size,
-        embargo_size=validation.embargo_size,
-    )
+    desired_n_folds = min(validation.purged_n_folds, max(3, len(dataset.X) - 1))
+    for n_folds in range(desired_n_folds, 2, -1):
+        max_n_test_folds = min(validation.purged_n_test_folds, n_folds - 1)
+        for n_test_folds in range(max_n_test_folds, 1, -1):
+            cv = CombinatorialPurgedCV(
+                n_folds=n_folds,
+                n_test_folds=n_test_folds,
+                purged_size=validation.purged_size,
+                embargo_size=validation.embargo_size,
+            )
+            if has_usable_splits(cv, dataset.X):
+                return cv
+    return None
 
 
 def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfig):
@@ -380,13 +546,16 @@ def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfi
 
     asset_subset_size = min(max(4, dataset.X.shape[1] // 2), dataset.X.shape[1])
     window_size = min(validation.randomized_window_size, len(dataset.X))
-    return MultipleRandomizedCV(
+    cv = MultipleRandomizedCV(
         walk_forward=get_walk_forward_cv(validation),
         n_subsamples=validation.randomized_subsamples,
         asset_subset_size=asset_subset_size,
         window_size=window_size,
         random_state=validation.seed,
     )
+    if has_usable_splits(cv, dataset.X):
+        return cv
+    return None
 
 
 def iter_validation_cases(datasets: list[DatasetCase], validation: ValidationConfig):
@@ -394,7 +563,9 @@ def iter_validation_cases(datasets: list[DatasetCase], validation: ValidationCon
     # single strategy is not overfit to one market regime or one test protocol.
     for dataset in datasets:
         yield dataset, "walk_forward", get_walk_forward_cv(validation)
-        yield dataset, "combinatorial_purged", get_combinatorial_purged_cv(validation)
+        purged_cv = get_combinatorial_purged_cv(dataset, validation)
+        if purged_cv is not None:
+            yield dataset, "combinatorial_purged", purged_cv
         randomized_cv = get_multiple_randomized_cv(dataset, validation)
         if randomized_cv is not None:
             yield dataset, "multiple_randomized", randomized_cv
@@ -415,6 +586,26 @@ def get_dataset_family(dataset: DatasetCase) -> str:
     if "relatives" in base_name:
         return "relatives"
     return "price"
+
+
+def build_case_result_row(
+    dataset: DatasetCase,
+    cv_name: str,
+    score_stats: dict[str, float | int],
+    error: str,
+) -> dict[str, str | float | int | bool]:
+    return {
+        "dataset": dataset.name,
+        "dataset_base": get_dataset_base_name(dataset.name),
+        "dataset_family": get_dataset_family(dataset),
+        "direction": get_dataset_direction(dataset.name),
+        "cv": cv_name,
+        "n_obs": dataset.X.shape[0],
+        "n_assets": dataset.X.shape[1],
+        "has_targets": dataset.y is not None,
+        "error": error,
+        **score_stats,
+    }
 
 
 def summarize_case_scores(path_scores: np.ndarray, fail_case_score: float) -> dict[str, float | int]:
@@ -438,6 +629,18 @@ def summarize_case_scores(path_scores: np.ndarray, fail_case_score: float) -> di
         # One simple metric per case: the median OOS Sharpe across paths.
         "case_score": float(np.median(finite_scores)),
     }
+
+
+def should_fast_fail(
+    rows: list[dict[str, str | float | int | bool]],
+    validation: ValidationConfig,
+) -> bool:
+    if validation.fast_fail_case_count <= 0 or len(rows) < validation.fast_fail_case_count:
+        return False
+    early = pd.DataFrame(rows[: validation.fast_fail_case_count])
+    if (early["n_finite_paths"] == 0).any():
+        return True
+    return float(early["case_score"].median()) <= validation.fast_fail_score_threshold
 
 
 def summarize_group_scores(details: pd.DataFrame, group_col: str) -> pd.DataFrame:
@@ -582,8 +785,9 @@ def evaluate_experiment(
     set_global_seed(validation.seed)
     rows: list[dict[str, str | float | int | bool]] = []
     start = time.time()
+    validation_cases = list(iter_validation_cases(datasets, validation))
 
-    for dataset, cv_name, cv in iter_validation_cases(datasets, validation):
+    for case_idx, (dataset, cv_name, cv) in enumerate(validation_cases):
         if timeout_seconds is not None and (time.time() - start) >= timeout_seconds:
             break
 
@@ -602,20 +806,27 @@ def evaluate_experiment(
             error = f"{type(exc).__name__}: {exc}"
 
         score_stats = summarize_case_scores(path_scores, validation.fail_case_score)
-        rows.append(
-            {
-                "dataset": dataset.name,
-                "dataset_base": get_dataset_base_name(dataset.name),
-                "dataset_family": get_dataset_family(dataset),
-                "direction": get_dataset_direction(dataset.name),
-                "cv": cv_name,
-                "n_obs": dataset.X.shape[0],
-                "n_assets": dataset.X.shape[1],
-                "has_targets": dataset.y is not None,
-                "error": error,
-                **score_stats,
-            }
-        )
+        rows.append(build_case_result_row(dataset, cv_name, score_stats, error))
+        if should_fast_fail(rows, validation):
+            remaining_cases = validation_cases[case_idx + 1 :]
+            fast_fail_error = (
+                "fast_fail: early validation cases were implausible or unstable; "
+                "remaining cases scored at the failure floor."
+            )
+            failed_score_stats = summarize_case_scores(
+                np.asarray([], dtype=float),
+                validation.fail_case_score,
+            )
+            for remaining_dataset, remaining_cv_name, _ in remaining_cases:
+                rows.append(
+                    build_case_result_row(
+                        remaining_dataset,
+                        remaining_cv_name,
+                        failed_score_stats,
+                        fast_fail_error,
+                    )
+                )
+            break
 
     details = pd.DataFrame(rows)
     if details.empty:
