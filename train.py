@@ -56,8 +56,8 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_gerber"
-    changed_axis: str = "covariance_estimator: Gerber - robust to outliers"
+    experiment_name: str = "meanrisk_denoise"
+    changed_axis: str = "covariance_estimator: Denoise - RMT denoising"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
@@ -69,7 +69,7 @@ class ExperimentConfig:
     risk_measure: RiskMeasure = RiskMeasure.VARIANCE
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
-    covariance_estimator: str = "gerber"
+    covariance_estimator: str = "denoise"
     select_complete_internal_nan: bool = True
     zero_imputation_value: float = 0.0
     preselection_k: int = None
