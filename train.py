@@ -70,7 +70,7 @@ class ExperimentConfig:
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "ledoit_wolf"
-    select_complete_internal_nan: bool = False
+    select_complete_internal_nan: bool = True
     zero_imputation_value: float = 0.0
     preselection_k: int = None
     allow_short: bool = False
@@ -87,11 +87,11 @@ class ExperimentConfig:
 class ValidationConfig:
     # Keep validation separate from model design so strategy changes can be
     # compared under a stable, reproducible protocol.
-    walk_forward_train_size: int = 252
-    walk_forward_test_size: int = 63
-    randomized_subsamples: int = 6
-    randomized_window_size: int = 756
-    randomized_min_assets: int = 8
+    walk_forward_train_size: int = 6 * 21  # six months
+    walk_forward_test_size: int = 2 * 21  # two months
+    randomized_subsamples: int = 100  # high enough to reduce variance
+    randomized_window_size: int = 21 * 12 * 3  # Two years
+    randomized_min_assets: int = 12  # good for datasets of 18 to 88 assets on average
     seed: int = 0
     fail_case_score: float = np.nan
     fast_fail_case_count: int = 2

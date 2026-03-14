@@ -62,13 +62,6 @@ PRICE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
 
 RELATIVE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
     RemoteDatasetSpec(
-        name="cmc20_relatives",
-        filename="cmc20_relatives.csv.gz",
-        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/cmc20_relatives.csv.gz",
-        kind="relatives",
-        has_datetime_index=False,
-    ),
-    RemoteDatasetSpec(
         name="djia_relatives",
         filename="djia_relatives.csv.gz",
         url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/djia_relatives.csv.gz",
@@ -156,9 +149,7 @@ def _read_dataset_frame(
     return frame
 
 
-def _reverse_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
-    if frame is None:
-        return None
+def _reverse_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.iloc[::-1].copy()
 
 
@@ -169,15 +160,6 @@ def _to_linear_returns(frame: pd.DataFrame, source_kind: str) -> pd.DataFrame:
         returns = frame - 1.0
     else:
         raise ValueError(f"Unknown dataset kind: {source_kind}")
-
-    returns = returns.astype(float)
-    values = returns.to_numpy(dtype=float)
-    finite_values = values[np.isfinite(values)]
-    if finite_values.size and finite_values.min() <= -1.0:
-        raise ValueError(
-            "Expected linear returns strictly greater than -1. "
-            f"Observed minimum value {finite_values.min():.6f}."
-        )
     return returns
 
 

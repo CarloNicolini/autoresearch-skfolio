@@ -91,13 +91,11 @@ Use three kinds of outer validation:
 
 Guiding rules:
 
-- Original and reversed datasets must both be included.
-- Factor-aware cases should exist so the agent can use `FactorModel` and related ideas.
+- All datasets must be included, don't ignore some of them.
 - Asset-only cases should also exist so the agent can use randomized sub-universe backtests.
 - A feature that only works on some datasets should degrade gracefully or fall back cleanly on the others.
 - A model that only shines on one split is not interesting.
 - Missing-data handling must stay inside the fold. Training-time asset selection, moment estimation, and any imputation must be fit on the training slice only.
-- `CombinatorialPurgedCV` is a first-class guardrail, not an optional extra. If a parameterization is invalid for a dataset, the script should shrink to a valid conservative configuration or skip that case cleanly rather than crash.
 - `MultipleRandomizedCV` is a stress test against accidental tuning to one universe or one date range. If it breaks, fix the split logic or data-handling logic instead of disabling it casually.
 
 ## Missing Data Policy
