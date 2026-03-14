@@ -37,12 +37,12 @@ from skfolio.moments import (
 )
 from skfolio.moments.covariance._base import BaseCovariance
 from skfolio.moments.expected_returns._base import BaseMu
-from skfolio.distance import MutualInformation
 from skfolio.optimization import (
     EqualWeighted,
     HierarchicalRiskParity,
     InverseVolatility,
     MeanRisk,
+    NestedClustersOptimization,
     ObjectiveFunction,
     RiskBudgeting,
 )
@@ -56,17 +56,17 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "hrp_mutual_info"
-    changed_axis: str = "HRP with MutualInformation distance and CVaR"
+    experiment_name: str = "nco_variance"
+    changed_axis: str = "optimizer_family: NCO with MeanRisk inner/outer"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
     preprocessor_kind: str = "none"
     pre_selector_kind: str = "none"
-    optimizer_kind: str = "hrp_mutual_info"
+    optimizer_kind: str = "nco"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
-    risk_measure: RiskMeasure = RiskMeasure.CVAR
+    risk_measure: RiskMeasure = RiskMeasure.VARIANCE
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "ledoit_wolf"
@@ -324,6 +324,31 @@ def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
     )
 
 
+def build_nco(config: ExperimentConfig, dataset: DatasetCase):
+    # Nested Clusters Optimization: cluster then optimize within/across clusters
+    inner_estimator = MeanRisk(
+        objective_function=config.objective,
+        risk_measure=config.risk_measure,
+        prior_estimator=build_prior(config, dataset),
+        min_weights=0.0,
+        max_weights=config.max_long,
+        raise_on_failure=False,
+    )
+    outer_estimator = MeanRisk(
+        objective_function=config.objective,
+        risk_measure=config.risk_measure,
+        prior_estimator=build_prior(config, dataset),
+        min_weights=0.0,
+        max_weights=1.0,
+        raise_on_failure=False,
+    )
+    return NestedClustersOptimization(
+        inner_estimator=inner_estimator,
+        outer_estimator=outer_estimator,
+        raise_on_failure=False,
+    )
+
+
 def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
     # Optimizer dispatch is intentionally explicit so the searchable strategy
     # space stays inspectable and diff-friendly.
@@ -334,6 +359,7 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         "hrp": build_hrp,
         "hrp_mutual_info": build_hrp_mutual_info,
         "risk_budgeting": build_risk_budgeting,
+        "nco": build_nco,
     }
     try:
         return builders[config.optimizer_kind](config, dataset)
