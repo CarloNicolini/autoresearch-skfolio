@@ -14,7 +14,7 @@ Give an AI agent a minimal but real portfolio-research harness: fixed data helpe
 - **`train.py`** — The main research surface. It builds the portfolio model and defines the outer-validation suite (`WalkForward`, `CombinatorialPurgedCV`, `MultipleRandomizedCV` when eligible).
 - **`program.md`** — Instructions for the agent: setup, experiment loop, how to log results and when to keep/discard.
 
-By design, each run does one full evaluation over every dataset/CV case. The metric is **`val_sharpe`**: the equal-weight mean of per-case median annualized out-of-sample Sharpe ratios.
+By design, each run does one full evaluation over every dataset/CV case. The metric is **`val_sharpe`**: the equal-weight mean of per-case median out-of-sample **Deflated Sharpe Ratio** (DSR).
 
 ## Quick start
 

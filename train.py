@@ -18,6 +18,7 @@ from sklearn import set_config
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
+from dsr import deflated_sharpe_ratio, extract_path_returns
 from skfolio import RiskMeasure
 from skfolio.model_selection import (
     MultipleRandomizedCV,
@@ -45,7 +46,7 @@ from skfolio.optimization import (
 from skfolio.pre_selection import SelectComplete, SelectKExtremes
 from skfolio.prior import EmpiricalPrior, FactorModel
 
-from prepare import DatasetCase, TIME_BUDGET, extract_path_sharpes, get_all_datasets
+from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 
 
 @dataclass(frozen=True)
@@ -89,9 +90,10 @@ class ValidationConfig:
     randomized_window_size: int = 21 * 12 * 3  # Two years
     randomized_min_assets: int = 12  # good for datasets of 18 to 88 assets on average
     seed: int = 0
+    search_sr_trials: tuple[float, ...] = ()
     fail_case_score: float = np.nan
     fast_fail_case_count: int = 2
-    fast_fail_score_threshold: float = -2.0
+    fast_fail_score_threshold: float = 0.10
 
 
 @dataclass(frozen=True)
@@ -474,6 +476,23 @@ def build_case_result_row(
     }
 
 
+def score_validation_paths(
+    path_returns: tuple[np.ndarray, ...],
+    search_sr_trials: tuple[float, ...],
+) -> np.ndarray:
+    # Deflate each path against the full strategy search, not against the number
+    # of CV folds. With no outer search history we fall back to PSR versus zero.
+    if not path_returns:
+        return np.asarray([], dtype=float)
+    return np.asarray(
+        [
+            deflated_sharpe_ratio(returns=returns, sr_trials=search_sr_trials)
+            for returns in path_returns
+        ],
+        dtype=float,
+    )
+
+
 def summarize_case_scores(
     path_scores: np.ndarray, fail_case_score: float
 ) -> dict[str, float | int]:
@@ -494,7 +513,7 @@ def summarize_case_scores(
         "n_finite_paths": int(finite_scores.size),
         "path_mean": float(finite_scores.mean()),
         "path_std": float(finite_scores.std()),
-        # One simple metric per case: the median OOS Sharpe across paths.
+        # One simple metric per case: the median out-of-sample DSR across paths.
         "case_score": float(np.median(finite_scores)),
     }
 
@@ -634,7 +653,11 @@ def evaluate_experiment(
             portfolios = cross_val_predict(
                 model, dataset.X, y=dataset.y, cv=cv, n_jobs=config.n_jobs
             )
-            path_scores = extract_path_sharpes(portfolios)
+            path_returns = extract_path_returns(portfolios)
+            path_scores = score_validation_paths(
+                path_returns=path_returns,
+                search_sr_trials=validation.search_sr_trials,
+            )
         except (Exception, RuntimeWarning) as exc:
             # Research runs should fail soft: record the issue, score the case as
             # failed, and continue so broad searches do not stop on one bad idea.
@@ -679,21 +702,6 @@ def evaluate_experiment(
     )
 
 
-def get_git_commit() -> str:
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout.strip()
-    except Exception:
-        return "unknown"
-
-
 def main():
     # `main` makes the file runnable as a standalone benchmark script.
     t_start = time.time()
@@ -706,7 +714,6 @@ def main():
         timeout_seconds=TIME_BUDGET,
     )
     total_seconds = time.time() - t_start
-    commit = get_git_commit()
     failed_cases = summary.diagnostics["failed_cases"]
     robust_pass = summary.diagnostics["robust_pass"]
 
@@ -717,14 +724,6 @@ def main():
     print(f"robust_pass:      {robust_pass}")
     print(f"seconds:          {total_seconds:.1f}")
     print()
-
-    # Single-line TSV row for easy copy-paste into results.tsv
-    description = f"{EXPERIMENT.experiment_name} | {EXPERIMENT.changed_axis}"
-    tsv_row = (
-        f"{commit}\t{summary.val_sharpe:.6f}\t"
-        f"{total_seconds:.1f}\t{failed_cases}\t{robust_pass}\t{description}"
-    )
-    print(tsv_row)
 
 
 if __name__ == "__main__":

@@ -47,14 +47,7 @@ Each experiment runs the full evaluation once: all datasets, reversed counterpar
 
 **Goal: get the highest val_sharpe.**
 
-`val_sharpe` must remain one scalar metric with this meaning:
-
-- For each dataset/CV case, compute the annualized out-of-sample Sharpe ratio for every reconstructed path.
-- Collapse that case to one number using the **median** path Sharpe.
-- Aggregate all case scores with an **equal-weight mean**.
-- If a case errors or produces no finite paths, assign it a hard failure floor.
-
-This keeps the metric simple while forcing robustness into the validation design rather than into a complicated objective formula.
+The primary metric is built from the **Deflated Sharpe Ratio (DSR)** so that scoring accounts for skewness, kurtosis, limited sample size, and multiple testing. The script prints and exposes this value under the name **`val_sharpe`**. This keeps the metric interpretable while making it harder to game with lucky single-path Sharpe.
 
 **Simplicity criterion**: Prefer simpler changes. A small gain that adds heavy complexity may not be worth it. Removing complexity while keeping or improving results is a win.
 
@@ -70,8 +63,6 @@ The built-in ladder in `train.py` is:
 1. `equal_weight_baseline`
 2. `inverse_volatility_baseline`
 3. `mean_risk_baseline`
-4. `risk_budgeting_baseline`
-5. `hierarchical_risk_parity_baseline`
 
 Guiding rule:
 
@@ -141,8 +132,9 @@ In this template, the corresponding defenses should be:
 
 ## Robustness Gates
 
-`val_sharpe` remains the primary objective, but a run should also clear hard robustness gates.
-These gates are defined in `train.py` and should remain hard to game.
+`val_sharpe` (the DSR-based score) remains the primary objective, but a run should also clear hard **robustness gates**. The script reports whether all gates passed as **`robust_pass`** (see Output format). You need both: a higher `val_sharpe` and `robust_pass: True` to accept a run as a baseline candidate.
+
+The gates are defined in `train.py` and should remain hard to game.
 
 Current gate families:
 
@@ -267,6 +259,8 @@ robust_pass:      True
 seconds:   8.3
 ```
 
+The value on the **`val_sharpe`** line is the Deflated Sharpe Ratio score (mean of per-case median path DSR).
+
 Extract the main metric with:
 
 ```bash
@@ -284,7 +278,7 @@ commit val_sharpe seconds failed_cases robust_pass description
 ```
 
 1. git commit hash (short, 7 chars)
-2. val_sharpe achieved (e.g. 0.968529) — use null for crashes
+2. val_sharpe achieved (DSR-based score, e.g. 0.968529) — use null for crashes
 3. total seconds (e.g. 3.9; can be null for crashes)
 4. failed_cases (number of failed validation cases, e.g. 0)
 5. robust_pass (`True` or `False`)
@@ -315,11 +309,10 @@ LOOP FOREVER:
 3. `git commit`
 4. Run: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
 5. Read results: `grep "^val_sharpe:\|^failed_cases:\|^robust_pass:\|^seconds:" run.log`
-6. If the run crashed (no val_sharpe), run `tail -n 50 run.log` to debug. Fix trivial bugs and re-run; if the idea is broken, log as `crash` and move on.
-7. Read the family summary, direction summary, and gain attribution tables. Make sure the improvement is broad enough to be believable.
-8. Append the row to `results.tsv`.
-9. If val_sharpe improved and the robustness gates still pass, keep the commit and advance.
-10. If val_sharpe stayed the same or decreased, or robustness got materially worse, discard and move on.
+If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
+6. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
+7. If val_sharpe improved and the robustness gates still pass, keep the commit and advance.
+8. If val_sharpe stayed the same or decreased, or robustness got materially worse, discard and move on.
 
 You are an autonomous researcher: keep improvements, discard regressions, advance the branch. Rewind only sparingly if stuck.
 
