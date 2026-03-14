@@ -56,8 +56,8 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_ewm"
-    changed_axis: str = "mu and covariance: Exponentially Weighted"
+    experiment_name: str = "meanrisk_semivar"
+    changed_axis: str = "risk_measure: SEMI_VARIANCE - downside risk only"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
@@ -66,10 +66,10 @@ class ExperimentConfig:
     optimizer_kind: str = "mean_risk"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
-    risk_measure: RiskMeasure = RiskMeasure.VARIANCE
+    risk_measure: RiskMeasure = RiskMeasure.SEMI_VARIANCE
     prior_kind: str = "empirical"
-    mu_estimator: str = "ewm"
-    covariance_estimator: str = "ewm"
+    mu_estimator: str = "empirical"
+    covariance_estimator: str = "ledoit_wolf"
     select_complete_internal_nan: bool = True
     zero_imputation_value: float = 0.0
     preselection_k: int = None
