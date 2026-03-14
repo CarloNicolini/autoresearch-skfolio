@@ -37,8 +37,10 @@ from skfolio.moments import (
 )
 from skfolio.moments.covariance._base import BaseCovariance
 from skfolio.moments.expected_returns._base import BaseMu
+from skfolio.distance import MutualInformation
 from skfolio.optimization import (
     EqualWeighted,
+    HierarchicalEqualRiskContribution,
     HierarchicalRiskParity,
     InverseVolatility,
     MeanRisk,
@@ -56,14 +58,14 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_k_extremes_15"
-    changed_axis: str = "pre_selection: SelectKExtremes k=15"
+    experiment_name: str = "herc_variance"
+    changed_axis: str = "optimizer_family: HERC - Hierarchical Equal Risk Contribution"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
     preprocessor_kind: str = "none"
-    pre_selector_kind: str = "k_extremes"
-    optimizer_kind: str = "mean_risk"
+    pre_selector_kind: str = "none"
+    optimizer_kind: str = "herc"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
     risk_measure: RiskMeasure = RiskMeasure.VARIANCE
@@ -72,7 +74,7 @@ class ExperimentConfig:
     covariance_estimator: str = "ledoit_wolf"
     select_complete_internal_nan: bool = True
     zero_imputation_value: float = 0.0
-    preselection_k: int = 15
+    preselection_k: int = None
     allow_short: bool = False
     max_long: float = 1.0
     max_short: float = 0.00
@@ -313,6 +315,14 @@ def build_hrp_mutual_info(config: ExperimentConfig, dataset: DatasetCase):
     )
 
 
+def build_herc(config: ExperimentConfig, dataset: DatasetCase):
+    # Hierarchical Equal Risk Contribution - uses dendrogram shape for ERC
+    return HierarchicalEqualRiskContribution(
+        risk_measure=config.risk_measure,
+        raise_on_failure=False,
+    )
+
+
 def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
     # Risk Budgeting: equal risk contribution, convex optimization
     return RiskBudgeting(
@@ -358,6 +368,7 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         "mean_risk": build_mean_risk,
         "hrp": build_hrp,
         "hrp_mutual_info": build_hrp_mutual_info,
+        "herc": build_herc,
         "risk_budgeting": build_risk_budgeting,
         "nco": build_nco,
     }
