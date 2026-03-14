@@ -56,8 +56,8 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_k_extremes"
-    changed_axis: str = "pre_selection: SelectKExtremes k=10"
+    experiment_name: str = "meanrisk_k_extremes_15"
+    changed_axis: str = "pre_selection: SelectKExtremes k=15"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
@@ -72,7 +72,7 @@ class ExperimentConfig:
     covariance_estimator: str = "ledoit_wolf"
     select_complete_internal_nan: bool = True
     zero_imputation_value: float = 0.0
-    preselection_k: int = 10
+    preselection_k: int = 15
     allow_short: bool = False
     max_long: float = 1.0
     max_short: float = 0.00
