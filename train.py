@@ -56,8 +56,8 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_semivar"
-    changed_axis: str = "risk_measure: SEMI_VARIANCE - downside risk only"
+    experiment_name: str = "meanrisk_l1l2_reg"
+    changed_axis: str = "regularization: L1 and L2 penalties"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
@@ -66,7 +66,7 @@ class ExperimentConfig:
     optimizer_kind: str = "mean_risk"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
-    risk_measure: RiskMeasure = RiskMeasure.SEMI_VARIANCE
+    risk_measure: RiskMeasure = RiskMeasure.VARIANCE
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "ledoit_wolf"
@@ -77,8 +77,8 @@ class ExperimentConfig:
     max_long: float = 1.0
     max_short: float = 0.00
     transaction_costs: float = 0.0
-    l1_coef: float = 0.0
-    l2_coef: float = 0.0
+    l1_coef: float = 1e-4
+    l2_coef: float = 1e-4
     # Prefer deterministic execution over maximum throughput.
     n_jobs: int = -1
 
