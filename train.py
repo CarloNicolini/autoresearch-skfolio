@@ -697,7 +697,7 @@ def get_git_commit() -> str:
 def main():
     # `main` makes the file runnable as a standalone benchmark script.
     t_start = time.time()
-    datasets = get_all_datasets(include_reversed=False)
+    datasets = get_all_datasets(include_reversed=True)
     summary = evaluate_experiment(
         config=EXPERIMENT,
         validation=VALIDATION,
