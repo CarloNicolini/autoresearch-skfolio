@@ -204,7 +204,7 @@ def _load_relatives_dataset(
     return _to_linear_returns(relatives, spec.kind)
 
 
-def get_all_datasets() -> list[DatasetCase]:
+def get_all_datasets(include_reversed: bool = False) -> list[DatasetCase]:
     """
     Load the dataset suite used by the research loop.
 
@@ -218,12 +218,14 @@ def get_all_datasets() -> list[DatasetCase]:
     for spec in PRICE_DATASETS:
         returns = _load_price_dataset(spec.name)
         cases.append(DatasetCase(spec.name, returns))
-        cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
+        if include_reversed:
+            cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
 
     for spec in RELATIVE_DATASETS:
         returns = _load_relatives_dataset(spec)
         cases.append(DatasetCase(spec.name, returns))
-        cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
+        if include_reversed:
+            cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
 
     return cases
 

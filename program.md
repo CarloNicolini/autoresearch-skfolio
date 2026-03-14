@@ -1,8 +1,8 @@
 # autoresearch (quantitative finance)
 
-Autonomous portfolio research: an agent iterates on a single training script to improve one robust out-of-sample metric across multiple datasets and validation regimes, using [skfolio](https://skfolio.org/).
+This is an experiment to have the LLM do its own research.
 
-The spirit should match a strong single-file pretraining script:
+The spirit should match a strong single-file portfolio optimization script:
 
 - one main script (`train.py`)
 - directly editable hyperparameter blocks, no CLI flag maze

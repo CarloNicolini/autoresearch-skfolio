@@ -16,7 +16,6 @@ import pandas as pd
 import sklearn.utils.validation as skv
 from sklearn import set_config
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import KFold
 from sklearn.pipeline import Pipeline
 
 from skfolio import RiskMeasure
@@ -39,12 +38,9 @@ from skfolio.moments.covariance._base import BaseCovariance
 from skfolio.moments.expected_returns._base import BaseMu
 from skfolio.optimization import (
     EqualWeighted,
-    HierarchicalRiskParity,
     InverseVolatility,
     MeanRisk,
-    NestedClustersOptimization,
     ObjectiveFunction,
-    RiskBudgeting,
 )
 from skfolio.pre_selection import SelectComplete, SelectKExtremes
 from skfolio.prior import EmpiricalPrior, FactorModel
@@ -295,58 +291,6 @@ def build_mean_risk(config: ExperimentConfig, dataset: DatasetCase):
     )
 
 
-def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
-    # Alternative construction step: same prior plumbing, different portfolio
-    # assembly logic.
-    return RiskBudgeting(
-        risk_measure=config.risk_measure,
-        prior_estimator=build_prior(config, dataset),
-        transaction_costs=config.transaction_costs,
-        raise_on_failure=False,
-        min_weights=-config.max_short if config.allow_short else 0.0,
-        max_weights=config.max_long,
-    )
-
-
-def build_hierarchical_risk_parity(config: ExperimentConfig, dataset: DatasetCase):
-    # Hierarchical methods let the agent explore clustering-based diversification
-    # without changing the broader evaluation protocol.
-    return HierarchicalRiskParity(
-        risk_measure=RiskMeasure[config.risk_measure.upper()],
-        prior_estimator=build_prior(config, dataset),
-        transaction_costs=config.transaction_costs,
-        raise_on_failure=False,
-        min_weights=-config.max_short if config.allow_short else 0.0,
-        max_weights=config.max_long,
-    )
-
-
-def build_nested_clusters(config: ExperimentConfig, dataset: DatasetCase):
-    # This is already a multi-step strategy: an inner optimizer builds cluster
-    # sleeves and an outer optimizer allocates across them. It is a useful
-    # template for richer composed research pipelines.
-    return NestedClustersOptimization(
-        inner_estimator=MeanRisk(
-            objective_function=ObjectiveFunction.MAXIMIZE_RATIO,
-            risk_measure=RiskMeasure[config.risk_measure.upper()],
-            prior_estimator=build_prior(config, dataset),
-            min_weights=0.0,
-            max_weights=0.50,
-            transaction_costs=config.transaction_costs,
-            l1_coef=config.l1_coef,
-            l2_coef=config.l2_coef,
-            raise_on_failure=False,
-        ),
-        outer_estimator=RiskBudgeting(
-            risk_measure=RiskMeasure.VARIANCE,
-            transaction_costs=config.transaction_costs,
-            raise_on_failure=False,
-        ),
-        cv=KFold(n_splits=3, shuffle=False),
-        n_jobs=config.n_jobs,
-    )
-
-
 def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
     # Optimizer dispatch is intentionally explicit so the searchable strategy
     # space stays inspectable and diff-friendly.
@@ -354,9 +298,6 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         "equal_weight": build_equal_weight,
         "inverse_volatility": build_inverse_volatility,
         "mean_risk": build_mean_risk,
-        "risk_budgeting": build_risk_budgeting,
-        "hierarchical_risk_parity": build_hierarchical_risk_parity,
-        "nested_clusters": build_nested_clusters,
     }
     try:
         return builders[config.optimizer_kind](config, dataset)
@@ -475,7 +416,7 @@ def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfi
         return None
 
     asset_subset_size = min(max(4, dataset.X.shape[1] // 2), dataset.X.shape[1])
-    window_size = min(validation.randomized_window_size, len(dataset.X))
+    window_size = min(validation.randomized_window_size, len(dataset.X) - 1)
     cv = MultipleRandomizedCV(
         walk_forward=get_walk_forward_cv(validation),
         n_subsamples=validation.randomized_subsamples,
@@ -756,7 +697,7 @@ def get_git_commit() -> str:
 def main():
     # `main` makes the file runnable as a standalone benchmark script.
     t_start = time.time()
-    datasets = get_all_datasets()
+    datasets = get_all_datasets(include_reversed=False)
     summary = evaluate_experiment(
         config=EXPERIMENT,
         validation=VALIDATION,
