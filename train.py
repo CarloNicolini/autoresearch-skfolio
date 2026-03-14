@@ -58,8 +58,8 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_gerber_cvar"
-    changed_axis: str = "risk_measure: CVaR with Gerber"
+    experiment_name: str = "meanrisk_gerber_std"
+    changed_axis: str = "risk_measure: STANDARD_DEVIATION with Gerber"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
@@ -68,7 +68,7 @@ class ExperimentConfig:
     optimizer_kind: str = "mean_risk"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
-    risk_measure: RiskMeasure = RiskMeasure.CVAR
+    risk_measure: RiskMeasure = RiskMeasure.STANDARD_DEVIATION
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "gerber"
