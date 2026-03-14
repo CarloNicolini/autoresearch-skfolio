@@ -721,7 +721,7 @@ def main():
     # Single-line TSV row for easy copy-paste into results.tsv
     description = f"{EXPERIMENT.experiment_name} | {EXPERIMENT.changed_axis}"
     tsv_row = (
-        f"results_tsv_row:\t{commit}\t{summary.val_sharpe:.6f}\t"
+        f"{commit}\t{summary.val_sharpe:.6f}\t"
         f"{total_seconds:.1f}\t{failed_cases}\t{robust_pass}\t{description}"
     )
     print(tsv_row)
