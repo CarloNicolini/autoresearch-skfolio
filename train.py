@@ -37,6 +37,7 @@ from skfolio.moments import (
 )
 from skfolio.moments.covariance._base import BaseCovariance
 from skfolio.moments.expected_returns._base import BaseMu
+from skfolio.distance import MutualInformation
 from skfolio.optimization import (
     EqualWeighted,
     HierarchicalRiskParity,
@@ -55,17 +56,17 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "meanrisk_max_sharpe"
-    changed_axis: str = "objective: MAXIMIZE_RATIO with VARIANCE"
+    experiment_name: str = "hrp_mutual_info"
+    changed_axis: str = "HRP with MutualInformation distance and CVaR"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
     preprocessor_kind: str = "none"
     pre_selector_kind: str = "none"
-    optimizer_kind: str = "mean_risk"
+    optimizer_kind: str = "hrp_mutual_info"
     post_processor_kind: str = "none"
-    objective: ObjectiveFunction = ObjectiveFunction.MAXIMIZE_RATIO
-    risk_measure: RiskMeasure = RiskMeasure.VARIANCE
+    objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
+    risk_measure: RiskMeasure = RiskMeasure.CVAR
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "ledoit_wolf"
@@ -303,6 +304,15 @@ def build_hrp(config: ExperimentConfig, dataset: DatasetCase):
     )
 
 
+def build_hrp_mutual_info(config: ExperimentConfig, dataset: DatasetCase):
+    # HRP with Mutual Information distance - captures non-linear dependencies
+    return HierarchicalRiskParity(
+        risk_measure=config.risk_measure,
+        distance_estimator=MutualInformation(),
+        raise_on_failure=False,
+    )
+
+
 def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
     # Risk Budgeting: equal risk contribution, convex optimization
     return RiskBudgeting(
@@ -322,6 +332,7 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         "inverse_volatility": build_inverse_volatility,
         "mean_risk": build_mean_risk,
         "hrp": build_hrp,
+        "hrp_mutual_info": build_hrp_mutual_info,
         "risk_budgeting": build_risk_budgeting,
     }
     try:
