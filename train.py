@@ -43,6 +43,7 @@ from skfolio.optimization import (
     InverseVolatility,
     MeanRisk,
     ObjectiveFunction,
+    RiskBudgeting,
 )
 from skfolio.pre_selection import SelectComplete, SelectKExtremes
 from skfolio.prior import EmpiricalPrior, FactorModel
@@ -54,14 +55,14 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "hrp_cvar"
-    changed_axis: str = "optimizer_family: HRP with CVaR"
+    experiment_name: str = "risk_budgeting_cvar"
+    changed_axis: str = "optimizer_family: RiskBudgeting with CVaR"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
     preprocessor_kind: str = "none"
     pre_selector_kind: str = "none"
-    optimizer_kind: str = "hrp"
+    optimizer_kind: str = "risk_budgeting"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
     risk_measure: RiskMeasure = RiskMeasure.CVAR
@@ -302,6 +303,17 @@ def build_hrp(config: ExperimentConfig, dataset: DatasetCase):
     )
 
 
+def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
+    # Risk Budgeting: equal risk contribution, convex optimization
+    return RiskBudgeting(
+        risk_measure=config.risk_measure,
+        prior_estimator=build_prior(config, dataset),
+        min_weights=0.0,
+        max_weights=config.max_long,
+        raise_on_failure=False,
+    )
+
+
 def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
     # Optimizer dispatch is intentionally explicit so the searchable strategy
     # space stays inspectable and diff-friendly.
@@ -310,6 +322,7 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         "inverse_volatility": build_inverse_volatility,
         "mean_risk": build_mean_risk,
         "hrp": build_hrp,
+        "risk_budgeting": build_risk_budgeting,
     }
     try:
         return builders[config.optimizer_kind](config, dataset)
