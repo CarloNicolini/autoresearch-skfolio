@@ -39,6 +39,7 @@ from skfolio.moments.covariance._base import BaseCovariance
 from skfolio.moments.expected_returns._base import BaseMu
 from skfolio.optimization import (
     EqualWeighted,
+    HierarchicalRiskParity,
     InverseVolatility,
     MeanRisk,
     ObjectiveFunction,
@@ -53,17 +54,17 @@ from prepare import DatasetCase, TIME_BUDGET, get_all_datasets
 class ExperimentConfig:
     # These metadata fields are the research ledger: every experiment should say
     # what changed, why it might help, and which baseline it aims to beat.
-    experiment_name: str = "mean_risk_baseline"
-    changed_axis: str = "baseline"
+    experiment_name: str = "hrp_cvar"
+    changed_axis: str = "optimizer_family: HRP with CVaR"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
     preprocessor_kind: str = "none"
     pre_selector_kind: str = "none"
-    optimizer_kind: str = "mean_risk"
+    optimizer_kind: str = "hrp"
     post_processor_kind: str = "none"
     objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
-    risk_measure: RiskMeasure = RiskMeasure.VARIANCE
+    risk_measure: RiskMeasure = RiskMeasure.CVAR
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "ledoit_wolf"
@@ -293,6 +294,14 @@ def build_mean_risk(config: ExperimentConfig, dataset: DatasetCase):
     )
 
 
+def build_hrp(config: ExperimentConfig, dataset: DatasetCase):
+    # Hierarchical Risk Parity: no covariance inversion, more stable than mean-variance
+    return HierarchicalRiskParity(
+        risk_measure=config.risk_measure,
+        raise_on_failure=False,
+    )
+
+
 def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
     # Optimizer dispatch is intentionally explicit so the searchable strategy
     # space stays inspectable and diff-friendly.
@@ -300,6 +309,7 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         "equal_weight": build_equal_weight,
         "inverse_volatility": build_inverse_volatility,
         "mean_risk": build_mean_risk,
+        "hrp": build_hrp,
     }
     try:
         return builders[config.optimizer_kind](config, dataset)
