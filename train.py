@@ -7,7 +7,7 @@ Single-file autonomous portfolio research surface.
 3. the reporting layer that explains why a strategy is or is not valuable
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import random
 import time
 
@@ -21,7 +21,6 @@ from sklearn.pipeline import Pipeline
 
 from skfolio import RiskMeasure
 from skfolio.model_selection import (
-    CombinatorialPurgedCV,
     MultipleRandomizedCV,
     WalkForward,
     cross_val_predict,
@@ -59,10 +58,6 @@ class ExperimentConfig:
     # what changed, why it might help, and which baseline it aims to beat.
     experiment_name: str = "mean_risk_baseline"
     changed_axis: str = "baseline"
-    hypothesis: str = "A simple mean-risk allocator should beat naive diversification."
-    expected_benefit: str = "Use estimated moments to improve risk-adjusted allocation."
-    expected_risk: str = "Moment estimation noise may hurt robustness on some datasets."
-    baseline_reference: str = "inverse_volatility_baseline"
     # These are explicit strategy-composition slots. Future agents should prefer
     # changing one slot at a time so ablations stay interpretable.
     nan_handling: str = "pipeline"
@@ -70,22 +65,22 @@ class ExperimentConfig:
     pre_selector_kind: str = "none"
     optimizer_kind: str = "mean_risk"
     post_processor_kind: str = "none"
-    objective: str = "maximize_ratio"
-    risk_measure: str = "variance"
+    objective: ObjectiveFunction = ObjectiveFunction.MINIMIZE_RISK
+    risk_measure: RiskMeasure = RiskMeasure.VARIANCE
     prior_kind: str = "empirical"
     mu_estimator: str = "empirical"
     covariance_estimator: str = "ledoit_wolf"
     select_complete_internal_nan: bool = False
     zero_imputation_value: float = 0.0
-    preselection_k: int = 10
+    preselection_k: int = None
     allow_short: bool = False
-    max_long: float = 0.20
-    max_short: float = 0.20
+    max_long: float = 1.0
+    max_short: float = 0.00
     transaction_costs: float = 0.0
     l1_coef: float = 0.0
-    l2_coef: float = 0.01
+    l2_coef: float = 0.0
     # Prefer deterministic execution over maximum throughput.
-    n_jobs: int = 1
+    n_jobs: int = -1
 
 
 @dataclass(frozen=True)
@@ -94,17 +89,11 @@ class ValidationConfig:
     # compared under a stable, reproducible protocol.
     walk_forward_train_size: int = 252
     walk_forward_test_size: int = 63
-    purged_n_folds: int = 8
-    purged_n_test_folds: int = 2
-    purged_size: int = 5
-    embargo_size: int = 5
     randomized_subsamples: int = 6
     randomized_window_size: int = 756
     randomized_min_assets: int = 8
     seed: int = 0
-    fail_case_score: float = -5.0
-    include_baseline_ladder: bool = True
-    baseline_timeout_seconds: float | None = 120.0
+    fail_case_score: float = np.nan
     fast_fail_case_count: int = 2
     fast_fail_score_threshold: float = -2.0
 
@@ -120,11 +109,6 @@ class RobustnessConfig:
 
 
 @dataclass(frozen=True)
-class ReportingConfig:
-    top_case_count: int = 3
-
-
-@dataclass(frozen=True)
 class EvaluationSummary:
     experiment_name: str
     val_sharpe: float
@@ -132,7 +116,6 @@ class EvaluationSummary:
     family_summary: pd.DataFrame
     direction_summary: pd.DataFrame
     diagnostics: dict[str, float | int | bool | str]
-    family_gain_attribution: pd.DataFrame
 
 
 # Hyperparameters (edit directly, no CLI flags). Future agent iterations should
@@ -140,7 +123,6 @@ class EvaluationSummary:
 EXPERIMENT = ExperimentConfig()
 VALIDATION = ValidationConfig()
 ROBUSTNESS = RobustnessConfig()
-REPORTING = ReportingConfig()
 
 
 class PairwiseEmpiricalMu(BaseMu):
@@ -204,63 +186,6 @@ class PairwiseEmpiricalCovariance(BaseCovariance):
         return tags
 
 
-def get_baseline_ladder() -> list[ExperimentConfig]:
-    # The ladder gives the agent a concrete value proposition target: every new
-    # method should explain why it is better than one or more simple baselines.
-    return [
-        ExperimentConfig(
-            experiment_name="equal_weight_baseline",
-            changed_axis="baseline_ladder",
-            hypothesis="Equal weighting sets the naive diversification floor.",
-            expected_benefit="Very robust simple benchmark.",
-            expected_risk="Ignores relative risk and return structure.",
-            baseline_reference="none",
-            optimizer_kind="equal_weight",
-            prior_kind="empirical",
-            mu_estimator="none",
-            covariance_estimator="none",
-        ),
-        ExperimentConfig(
-            experiment_name="inverse_volatility_baseline",
-            changed_axis="baseline_ladder",
-            hypothesis="Inverse-volatility should improve on equal weight by scaling down risky names.",
-            expected_benefit="Simple risk-aware benchmark.",
-            expected_risk="Still ignores cross-asset correlation.",
-            baseline_reference="equal_weight_baseline",
-            optimizer_kind="inverse_volatility",
-            prior_kind="empirical",
-            mu_estimator="none",
-        ),
-        ExperimentConfig(
-            experiment_name="mean_risk_baseline",
-            changed_axis="baseline_ladder",
-            hypothesis="Mean-risk should improve on inverse-volatility when moment estimates are useful.",
-            expected_benefit="Uses expected return and covariance information.",
-            expected_risk="Sensitive to estimation noise.",
-            baseline_reference="inverse_volatility_baseline",
-            optimizer_kind="mean_risk",
-        ),
-        ExperimentConfig(
-            experiment_name="risk_budgeting_baseline",
-            changed_axis="baseline_ladder",
-            hypothesis="Risk budgeting may trade some efficiency for robustness.",
-            expected_benefit="More stable diversification profile.",
-            expected_risk="Can underuse return information.",
-            baseline_reference="mean_risk_baseline",
-            optimizer_kind="risk_budgeting",
-        ),
-        ExperimentConfig(
-            experiment_name="hierarchical_risk_parity_baseline",
-            changed_axis="baseline_ladder",
-            hypothesis="Hierarchical structure may improve diversification under unstable covariances.",
-            expected_benefit="Clustering-aware allocation.",
-            expected_risk="Can be overly driven by the clustering structure.",
-            baseline_reference="risk_budgeting_baseline",
-            optimizer_kind="hierarchical_risk_parity",
-        ),
-    ]
-
-
 def set_global_seed(seed: int) -> None:
     # Seed the common random generators used directly in this script and by the
     # randomized validation helpers.
@@ -272,47 +197,52 @@ def build_mu_estimator(config: ExperimentConfig):
     # Keep the estimator factories small and explicit: adding a new option should
     # mean adding one new branch and a clear name in the config.
     name = config.mu_estimator
-    if name == "none":
-        return None
-    if config.nan_handling == "native":
-        if name == "empirical":
+
+    match (config.nan_handling, name):
+        case (_, "none"):
+            return None
+        case ("native", "empirical"):
             return PairwiseEmpiricalMu()
-        raise ValueError(
-            "nan_handling='native' only supports mu_estimator in {'none', 'empirical'}."
-        )
-    if name == "empirical":
-        return EmpiricalMu()
-    if name == "shrunk":
-        return ShrunkMu()
-    if name == "ewm":
-        return EWMu(alpha=0.10)
-    raise ValueError(f"Unknown mu_estimator: {name}")
+        case ("native", _):
+            raise ValueError(
+                "nan_handling='native' only supports mu_estimator in {'none', 'empirical'}."
+            )
+        case (_, "empirical"):
+            return EmpiricalMu()
+        case (_, "shrunk"):
+            return ShrunkMu()
+        case (_, "ewm"):
+            return EWMu(alpha=0.10)
+        case _:
+            raise ValueError(f"Unknown mu_estimator: {name}")
 
 
 def build_covariance_estimator(config: ExperimentConfig):
     name = config.covariance_estimator
-    if name == "none":
-        return None
-    if config.nan_handling == "native":
-        if name == "empirical":
+    match (config.nan_handling, name):
+        case (_, "none"):
+            return None
+        case ("native", "empirical"):
             return PairwiseEmpiricalCovariance()
-        if name == "denoise":
+        case ("native", "denoise"):
             return DenoiseCovariance(covariance_estimator=PairwiseEmpiricalCovariance())
-        raise ValueError(
-            "nan_handling='native' only supports covariance_estimator in "
-            "{'none', 'empirical', 'denoise'}."
-        )
-    if name == "empirical":
-        return EmpiricalCovariance()
-    if name == "ledoit_wolf":
-        return LedoitWolf()
-    if name == "ewm":
-        return EWCovariance(alpha=0.10)
-    if name == "denoise":
-        return DenoiseCovariance()
-    if name == "gerber":
-        return GerberCovariance()
-    raise ValueError(f"Unknown covariance_estimator: {name}")
+        case ("native", _):
+            raise ValueError(
+                "nan_handling='native' only supports covariance_estimator in "
+                "{'none', 'empirical', 'denoise'}."
+            )
+        case (_, "empirical"):
+            return EmpiricalCovariance()
+        case (_, "ledoit_wolf"):
+            return LedoitWolf()
+        case (_, "ewm"):
+            return EWCovariance(alpha=0.10)
+        case (_, "denoise"):
+            return DenoiseCovariance()
+        case (_, "gerber"):
+            return GerberCovariance()
+        case _:
+            raise ValueError(f"Unknown covariance_estimator: {name}")
 
 
 def build_empirical_prior(config: ExperimentConfig):
@@ -325,14 +255,16 @@ def build_empirical_prior(config: ExperimentConfig):
 
 
 def build_prior(config: ExperimentConfig, dataset: DatasetCase):
-    # Dataset-aware fallback is the key simplification: one research config can
-    # still exploit factor-aware priors where targets exist without breaking
-    # asset-only datasets.
-    if config.prior_kind == "factor" and dataset.y is not None:
-        return FactorModel()
-    if config.prior_kind in {"empirical", "factor"}:
-        return build_empirical_prior(config)
-    raise ValueError(f"Unknown prior_kind: {config.prior_kind}")
+    match config.prior_kind:
+        case "factor":
+            if dataset.y is not None:
+                return FactorModel()
+            # Fall-through to empirical logic below if dataset.y is None
+            return build_empirical_prior(config)
+        case "empirical":
+            return build_empirical_prior(config)
+        case _:
+            raise ValueError(f"Unknown prior_kind: {config.prior_kind}")
 
 
 def build_equal_weight(config: ExperimentConfig, dataset: DatasetCase):
@@ -351,8 +283,8 @@ def build_mean_risk(config: ExperimentConfig, dataset: DatasetCase):
     # objective/risk/constraint ideas.
     min_weights = -config.max_short if config.allow_short else 0.0
     return MeanRisk(
-        objective_function=ObjectiveFunction[config.objective.upper()],
-        risk_measure=RiskMeasure[config.risk_measure.upper()],
+        objective_function=config.objective,
+        risk_measure=config.risk_measure,
         prior_estimator=build_prior(config, dataset),
         min_weights=min_weights,
         max_weights=config.max_long,
@@ -367,10 +299,12 @@ def build_risk_budgeting(config: ExperimentConfig, dataset: DatasetCase):
     # Alternative construction step: same prior plumbing, different portfolio
     # assembly logic.
     return RiskBudgeting(
-        risk_measure=RiskMeasure[config.risk_measure.upper()],
+        risk_measure=config.risk_measure,
         prior_estimator=build_prior(config, dataset),
         transaction_costs=config.transaction_costs,
         raise_on_failure=False,
+        min_weights=-config.max_short if config.allow_short else 0.0,
+        max_weights=config.max_long,
     )
 
 
@@ -382,6 +316,8 @@ def build_hierarchical_risk_parity(config: ExperimentConfig, dataset: DatasetCas
         prior_estimator=build_prior(config, dataset),
         transaction_costs=config.transaction_costs,
         raise_on_failure=False,
+        min_weights=-config.max_short if config.allow_short else 0.0,
+        max_weights=config.max_long,
     )
 
 
@@ -428,7 +364,9 @@ def build_optimizer(config: ExperimentConfig, dataset: DatasetCase):
         raise ValueError(f"Unknown optimizer_kind: {config.optimizer_kind}") from exc
 
 
-def build_preprocessor_steps(config: ExperimentConfig, dataset: DatasetCase) -> list[tuple[str, object]]:
+def build_preprocessor_steps(
+    config: ExperimentConfig, dataset: DatasetCase
+) -> list[tuple[str, object]]:
     # This slot exists so future agents can add deterministic feature transforms
     # without rewriting the rest of the pipeline builder.
     steps: list[tuple[str, object]] = []
@@ -450,34 +388,47 @@ def build_preprocessor_steps(config: ExperimentConfig, dataset: DatasetCase) -> 
     raise ValueError(f"Unknown preprocessor_kind: {config.preprocessor_kind}")
 
 
-def build_pre_selector_steps(config: ExperimentConfig, dataset: DatasetCase) -> list[tuple[str, object]]:
+def build_pre_selector_steps(
+    config: ExperimentConfig, dataset: DatasetCase
+) -> list[tuple[str, object]]:
     # Keep pre-selection explicit in the pipeline so it is evaluated inside CV
     # rather than leaking information across folds.
     steps: list[tuple[str, object]] = []
-    if config.nan_handling in {"pipeline", "native"}:
-        set_config(transform_output="pandas")
-        steps.append(
-            (
-                "select_complete",
-                SelectComplete(
-                    drop_assets_with_internal_nan=config.select_complete_internal_nan
-                ),
+    match config.nan_handling:
+        case "pipeline" | "native":
+            set_config(transform_output="pandas")
+            steps.append(
+                (
+                    "select_complete",
+                    SelectComplete(
+                        drop_assets_with_internal_nan=config.select_complete_internal_nan
+                    ),
+                )
             )
-        )
-    elif config.nan_handling != "none":
-        raise ValueError(f"Unknown nan_handling: {config.nan_handling}")
-    if config.pre_selector_kind == "none":
-        return steps
-    if config.pre_selector_kind == "k_extremes":
-        set_config(transform_output="pandas")
-        steps.append(
-            ("pre_selection", SelectKExtremes(k=config.preselection_k, highest=True))
-        )
-        return steps
-    raise ValueError(f"Unknown pre_selector_kind: {config.pre_selector_kind}")
+        case "none" | None:
+            pass
+        case _:
+            raise ValueError(f"Unknown nan_handling: {config.nan_handling}")
+
+    match config.pre_selector_kind:
+        case "none" | None:
+            return steps
+        case "k_extremes":
+            set_config(transform_output="pandas")
+            steps.append(
+                (
+                    "pre_selection",
+                    SelectKExtremes(k=config.preselection_k, highest=True),
+                )
+            )
+            return steps
+        case _:
+            raise ValueError(f"Unknown pre_selector_kind: {config.pre_selector_kind}")
 
 
-def build_post_processor_steps(config: ExperimentConfig, dataset: DatasetCase) -> list[tuple[str, object]]:
+def build_post_processor_steps(
+    config: ExperimentConfig, dataset: DatasetCase
+) -> list[tuple[str, object]]:
     # This slot is reserved for future portfolio post-processing stages once a
     # clean sklearn-compatible abstraction is needed.
     if config.post_processor_kind == "none":
@@ -517,27 +468,6 @@ def has_usable_splits(cv, X: pd.DataFrame) -> bool:
     return all(len(split[0]) > 0 for split in splits)
 
 
-def get_combinatorial_purged_cv(
-    dataset: DatasetCase,
-    validation: ValidationConfig,
-) -> CombinatorialPurgedCV | None:
-    # Purged CV is the more conservative protocol for time series because it
-    # reduces leakage from overlapping samples and nearby observations.
-    desired_n_folds = min(validation.purged_n_folds, max(3, len(dataset.X) - 1))
-    for n_folds in range(desired_n_folds, 2, -1):
-        max_n_test_folds = min(validation.purged_n_test_folds, n_folds - 1)
-        for n_test_folds in range(max_n_test_folds, 1, -1):
-            cv = CombinatorialPurgedCV(
-                n_folds=n_folds,
-                n_test_folds=n_test_folds,
-                purged_size=validation.purged_size,
-                embargo_size=validation.embargo_size,
-            )
-            if has_usable_splits(cv, dataset.X):
-                return cv
-    return None
-
-
 def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfig):
     # This stress test adds controlled randomness over windows and asset subsets.
     # With a fixed seed it remains reproducible while still probing robustness.
@@ -559,13 +489,8 @@ def get_multiple_randomized_cv(dataset: DatasetCase, validation: ValidationConfi
 
 
 def iter_validation_cases(datasets: list[DatasetCase], validation: ValidationConfig):
-    # Every dataset is evaluated under the same family of validation schemes so a
-    # single strategy is not overfit to one market regime or one test protocol.
+    # Every dataset is evaluated under a seeded multiple randomized cv
     for dataset in datasets:
-        yield dataset, "walk_forward", get_walk_forward_cv(validation)
-        purged_cv = get_combinatorial_purged_cv(dataset, validation)
-        if purged_cv is not None:
-            yield dataset, "combinatorial_purged", purged_cv
         randomized_cv = get_multiple_randomized_cv(dataset, validation)
         if randomized_cv is not None:
             yield dataset, "multiple_randomized", randomized_cv
@@ -608,7 +533,9 @@ def build_case_result_row(
     }
 
 
-def summarize_case_scores(path_scores: np.ndarray, fail_case_score: float) -> dict[str, float | int]:
+def summarize_case_scores(
+    path_scores: np.ndarray, fail_case_score: float
+) -> dict[str, float | int]:
     # Collapse each validation case to a small set of comparable diagnostics plus
     # one scalar score for the outer research loop.
     finite_scores = path_scores[np.isfinite(path_scores)]
@@ -635,7 +562,10 @@ def should_fast_fail(
     rows: list[dict[str, str | float | int | bool]],
     validation: ValidationConfig,
 ) -> bool:
-    if validation.fast_fail_case_count <= 0 or len(rows) < validation.fast_fail_case_count:
+    if (
+        validation.fast_fail_case_count <= 0
+        or len(rows) < validation.fast_fail_case_count
+    ):
         return False
     early = pd.DataFrame(rows[: validation.fast_fail_case_count])
     if (early["n_finite_paths"] == 0).any():
@@ -669,41 +599,8 @@ def summarize_group_scores(details: pd.DataFrame, group_col: str) -> pd.DataFram
     return summary.sort_values(group_col).reset_index(drop=True)
 
 
-def build_family_gain_attribution(
-    family_summary: pd.DataFrame,
-    reference_family_summary: pd.DataFrame | None,
-) -> pd.DataFrame:
-    columns = [
-        "dataset_family",
-        "reference_mean_case_score",
-        "mean_case_score",
-        "delta_vs_reference",
-        "gain_share",
-    ]
-    if reference_family_summary is None or family_summary.empty:
-        return pd.DataFrame(columns=columns)
-
-    merged = family_summary.merge(
-        reference_family_summary[["dataset_family", "mean_case_score"]],
-        on="dataset_family",
-        how="left",
-        suffixes=("", "_reference"),
-    )
-    merged.rename(columns={"mean_case_score_reference": "reference_mean_case_score"}, inplace=True)
-    merged["delta_vs_reference"] = merged["mean_case_score"] - merged["reference_mean_case_score"]
-    total_gain = float(merged["delta_vs_reference"].abs().sum())
-    if total_gain > 0:
-        merged["gain_share"] = merged["delta_vs_reference"].abs() / total_gain
-    else:
-        merged["gain_share"] = 0.0
-    return merged[columns].sort_values("dataset_family").reset_index(drop=True)
-
-
 def compute_diagnostics(
     details: pd.DataFrame,
-    family_summary: pd.DataFrame,
-    direction_summary: pd.DataFrame,
-    family_gain_attribution: pd.DataFrame,
     robustness: RobustnessConfig,
 ) -> dict[str, float | int | bool | str]:
     if details.empty:
@@ -729,44 +626,41 @@ def compute_diagnostics(
     reversed_mean = float(
         details.loc[details["direction"] == "reversed", "case_score"].mean()
     )
-    price_mean = float(details.loc[details["dataset_family"] == "price", "case_score"].mean())
+    price_mean = float(
+        details.loc[details["dataset_family"] == "price", "case_score"].mean()
+    )
     relatives_mean = float(
         details.loc[details["dataset_family"] == "relatives", "case_score"].mean()
     )
     original_vs_reversed_gap = abs(original_mean - reversed_mean)
     price_vs_relatives_gap = abs(price_mean - relatives_mean)
-    max_family_gain_share = (
-        float(family_gain_attribution["gain_share"].max())
-        if not family_gain_attribution.empty
-        else 0.0
-    )
     pass_failed_cases_gate = failed_cases <= robustness.max_failed_cases
-    pass_original_vs_reversed_gate = original_vs_reversed_gap <= robustness.max_original_vs_reversed_gap
+    pass_original_vs_reversed_gate = (
+        original_vs_reversed_gap <= robustness.max_original_vs_reversed_gap
+    )
     pass_price_vs_relatives_gate = (
         np.isnan(price_vs_relatives_gap)
         or price_vs_relatives_gap <= robustness.max_price_vs_relatives_gap
     )
-    pass_family_gain_share_gate = max_family_gain_share <= robustness.max_family_gain_share
     robust_pass = all(
         [
             pass_failed_cases_gate,
             pass_original_vs_reversed_gate,
             pass_price_vs_relatives_gate,
-            pass_family_gain_share_gate,
         ]
     )
     return {
         "failed_cases": failed_cases,
         "worst_case_score": float(details["case_score"].min()),
         "median_case_score": float(details["case_score"].median()),
-        "score_std_across_cases": float(details["case_score"].to_numpy(dtype=float).std()),
+        "score_std_across_cases": float(
+            details["case_score"].to_numpy(dtype=float).std()
+        ),
         "original_vs_reversed_gap": float(original_vs_reversed_gap),
         "price_vs_relatives_gap": float(price_vs_relatives_gap),
-        "max_family_gain_share": float(max_family_gain_share),
         "pass_failed_cases_gate": pass_failed_cases_gate,
         "pass_original_vs_reversed_gate": pass_original_vs_reversed_gate,
         "pass_price_vs_relatives_gate": pass_price_vs_relatives_gate,
-        "pass_family_gain_share_gate": pass_family_gain_share_gate,
         "robust_pass": robust_pass,
     }
 
@@ -777,7 +671,6 @@ def evaluate_experiment(
     robustness: RobustnessConfig,
     datasets: list[DatasetCase],
     timeout_seconds: float | None = TIME_BUDGET,
-    reference_summary: EvaluationSummary | None = None,
 ) -> EvaluationSummary:
     # This is the core benchmark harness: build one strategy, run it across the
     # full validation matrix, and return both the aggregate score and per-case
@@ -797,9 +690,11 @@ def evaluate_experiment(
             # `cross_val_predict` is the key abstraction here: any estimator or
             # pipeline that follows the expected API can be dropped into the same
             # evaluation harness.
-            portfolios = cross_val_predict(model, dataset.X, y=dataset.y, cv=cv, n_jobs=config.n_jobs)
+            portfolios = cross_val_predict(
+                model, dataset.X, y=dataset.y, cv=cv, n_jobs=config.n_jobs
+            )
             path_scores = extract_path_sharpes(portfolios)
-        except Exception as exc:
+        except (Exception, RuntimeWarning) as exc:
             # Research runs should fail soft: record the issue, score the case as
             # failed, and continue so broad searches do not stop on one bad idea.
             path_scores = np.asarray([], dtype=float)
@@ -829,267 +724,66 @@ def evaluate_experiment(
             break
 
     details = pd.DataFrame(rows)
-    if details.empty:
-        family_summary = summarize_group_scores(details, "dataset_family")
-        direction_summary = summarize_group_scores(details, "direction")
-        family_gain_attribution = build_family_gain_attribution(family_summary, None)
-        diagnostics = compute_diagnostics(
-            details,
-            family_summary,
-            direction_summary,
-            family_gain_attribution,
-            robustness,
-        )
-        return EvaluationSummary(
-            experiment_name=config.experiment_name,
-            val_sharpe=float("-inf"),
-            details=details,
-            family_summary=family_summary,
-            direction_summary=direction_summary,
-            diagnostics=diagnostics,
-            family_gain_attribution=family_gain_attribution,
-        )
-
     family_summary = summarize_group_scores(details, "dataset_family")
     direction_summary = summarize_group_scores(details, "direction")
-    reference_family_summary = None if reference_summary is None else reference_summary.family_summary
-    family_gain_attribution = build_family_gain_attribution(family_summary, reference_family_summary)
-    diagnostics = compute_diagnostics(
-        details,
-        family_summary,
-        direction_summary,
-        family_gain_attribution,
-        robustness,
-    )
+    diagnostics = compute_diagnostics(details, robustness)
+    val_sharpe = float("-inf") if details.empty else float(details["case_score"].mean())
     return EvaluationSummary(
         experiment_name=config.experiment_name,
-        val_sharpe=float(details["case_score"].mean()),
+        val_sharpe=val_sharpe,
         details=details,
         family_summary=family_summary,
         direction_summary=direction_summary,
         diagnostics=diagnostics,
-        family_gain_attribution=family_gain_attribution,
     )
 
 
-def evaluate_baseline_ladder(
-    validation: ValidationConfig,
-    robustness: RobustnessConfig,
-    datasets: list[DatasetCase],
-) -> dict[str, EvaluationSummary]:
-    summaries: dict[str, EvaluationSummary] = {}
-    if not validation.include_baseline_ladder:
-        return summaries
+def get_git_commit() -> str:
+    import subprocess
 
-    for config in get_baseline_ladder():
-        reference_summary = summaries.get(config.baseline_reference)
-        summaries[config.experiment_name] = evaluate_experiment(
-            config=config,
-            validation=validation,
-            robustness=robustness,
-            datasets=datasets,
-            timeout_seconds=validation.baseline_timeout_seconds,
-            reference_summary=reference_summary,
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
         )
-    return summaries
-
-
-def format_float(value: float) -> str:
-    return f"{value:.6f}" if pd.notna(value) else "nan"
-
-
-def format_details_table(summary: EvaluationSummary) -> str:
-    # Keep the console output stable and human-readable because agents and humans
-    # will both use it as a lightweight audit trail.
-    details = summary.details.copy()
-    if details.empty:
-        return "(no completed evaluation cases)"
-
-    display = details.copy()
-    for col in ["path_mean", "path_std", "case_score"]:
-        display[col] = display[col].map(format_float)
-    return display.to_string(index=False)
-
-
-def format_group_summary(summary: pd.DataFrame) -> str:
-    if summary.empty:
-        return "(no grouped results)"
-    display = summary.copy()
-    for col in ["mean_case_score", "median_case_score", "worst_case_score"]:
-        display[col] = display[col].map(format_float)
-    return display.to_string(index=False)
-
-
-def format_gain_attribution(summary: EvaluationSummary) -> str:
-    if summary.family_gain_attribution.empty:
-        return "(no reference attribution)"
-    display = summary.family_gain_attribution.copy()
-    for col in ["reference_mean_case_score", "mean_case_score", "delta_vs_reference", "gain_share"]:
-        display[col] = display[col].map(format_float)
-    return display.to_string(index=False)
-
-
-def format_baseline_ladder(baseline_summaries: dict[str, EvaluationSummary]) -> str:
-    if not baseline_summaries:
-        return "(baseline ladder disabled)"
-    rows = []
-    ladder_configs = {config.experiment_name: config for config in get_baseline_ladder()}
-    for name, summary in baseline_summaries.items():
-        config = ladder_configs[name]
-        rows.append(
-            {
-                "experiment_name": name,
-                "optimizer_kind": config.optimizer_kind,
-                "baseline_reference": config.baseline_reference,
-                "val_sharpe": summary.val_sharpe,
-                "worst_case_score": summary.diagnostics["worst_case_score"],
-                "failed_cases": summary.diagnostics["failed_cases"],
-                "robust_pass": summary.diagnostics["robust_pass"],
-            }
-        )
-    display = pd.DataFrame(rows)
-    for col in ["val_sharpe", "worst_case_score"]:
-        display[col] = display[col].map(format_float)
-    return display.to_string(index=False)
-
-
-def format_extreme_cases(summary: EvaluationSummary, top_case_count: int) -> str:
-    if summary.details.empty:
-        return "(no completed evaluation cases)"
-    columns = ["dataset", "cv", "dataset_family", "direction", "case_score", "error"]
-    worst = summary.details.nsmallest(top_case_count, "case_score")[columns].copy()
-    worst.insert(0, "segment", "worst")
-    best = summary.details.nlargest(top_case_count, "case_score")[columns].copy()
-    best.insert(0, "segment", "best")
-    display = pd.concat([worst, best], ignore_index=True)
-    display["case_score"] = display["case_score"].map(format_float)
-    return display.to_string(index=False)
-
-
-def format_diagnostics(summary: EvaluationSummary) -> str:
-    diagnostics = summary.diagnostics
-    rows = [
-        {"metric": "failed_cases", "value": diagnostics["failed_cases"]},
-        {"metric": "worst_case_score", "value": format_float(float(diagnostics["worst_case_score"]))},
-        {"metric": "median_case_score", "value": format_float(float(diagnostics["median_case_score"]))},
-        {
-            "metric": "score_std_across_cases",
-            "value": format_float(float(diagnostics["score_std_across_cases"])),
-        },
-        {
-            "metric": "original_vs_reversed_gap",
-            "value": format_float(float(diagnostics["original_vs_reversed_gap"])),
-        },
-        {
-            "metric": "price_vs_relatives_gap",
-            "value": format_float(float(diagnostics["price_vs_relatives_gap"])),
-        },
-        {
-            "metric": "max_family_gain_share",
-            "value": format_float(float(diagnostics["max_family_gain_share"])),
-        },
-        {"metric": "pass_failed_cases_gate", "value": diagnostics["pass_failed_cases_gate"]},
-        {
-            "metric": "pass_original_vs_reversed_gate",
-            "value": diagnostics["pass_original_vs_reversed_gate"],
-        },
-        {
-            "metric": "pass_price_vs_relatives_gate",
-            "value": diagnostics["pass_price_vs_relatives_gate"],
-        },
-        {
-            "metric": "pass_family_gain_share_gate",
-            "value": diagnostics["pass_family_gain_share_gate"],
-        },
-        {"metric": "robust_pass", "value": diagnostics["robust_pass"]},
-    ]
-    return pd.DataFrame(rows).to_string(index=False)
-
-
-def build_results_tsv_row(config: ExperimentConfig, summary: EvaluationSummary, status: str) -> str:
-    # This row is printed so the experiment ledger can be updated consistently.
-    return "\t".join(
-        [
-            "<commit>",
-            f"{summary.val_sharpe:.6f}",
-            status,
-            config.changed_axis,
-            config.baseline_reference,
-            config.hypothesis,
-            config.experiment_name,
-        ]
-    )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
 
 
 def main():
-    # `main` makes the file runnable as a standalone benchmark script, which is
-    # useful for quick baselines before folding changes into larger agent loops.
+    # `main` makes the file runnable as a standalone benchmark script.
     t_start = time.time()
     datasets = get_all_datasets()
-    baseline_summaries = evaluate_baseline_ladder(VALIDATION, ROBUSTNESS, datasets)
-    reference_summary = baseline_summaries.get(EXPERIMENT.baseline_reference)
     summary = evaluate_experiment(
         config=EXPERIMENT,
         validation=VALIDATION,
         robustness=ROBUSTNESS,
         datasets=datasets,
         timeout_seconds=TIME_BUDGET,
-        reference_summary=reference_summary,
     )
     total_seconds = time.time() - t_start
+    commit = get_git_commit()
+    failed_cases = summary.diagnostics["failed_cases"]
+    robust_pass = summary.diagnostics["robust_pass"]
 
-    print("Experiment metadata:")
-    for key in [
-        "experiment_name",
-        "changed_axis",
-        "hypothesis",
-        "expected_benefit",
-        "expected_risk",
-        "baseline_reference",
-    ]:
-        print(f"  {key}: {getattr(EXPERIMENT, key)}")
-    print()
-    print("Experiment config:")
-    for key, value in asdict(EXPERIMENT).items():
-        print(f"  {key}: {value}")
-    print()
-    print("Validation config:")
-    for key, value in asdict(VALIDATION).items():
-        print(f"  {key}: {value}")
-    print()
-    print("Robustness gates:")
-    for key, value in asdict(ROBUSTNESS).items():
-        print(f"  {key}: {value}")
-    print()
-    print("Baseline ladder:")
-    print(format_baseline_ladder(baseline_summaries))
-    print()
-    print("Family summary:")
-    print(format_group_summary(summary.family_summary))
-    print()
-    print("Direction summary:")
-    print(format_group_summary(summary.direction_summary))
-    print()
-    print("Family gain attribution vs reference:")
-    print(format_gain_attribution(summary))
-    print()
-    print("Extreme cases:")
-    print(format_extreme_cases(summary, REPORTING.top_case_count))
-    print()
-    print("Per-case results:")
-    print(format_details_table(summary))
-    print()
-    print("Robustness diagnostics:")
-    print(format_diagnostics(summary))
+    # Summary block for easy parsing (matches grep pattern in program.md)
     print("---")
     print(f"val_sharpe:       {summary.val_sharpe:.6f}")
-    print(f"evaluated_cases:  {len(summary.details)}")
-    print(f"failed_cases:     {summary.diagnostics['failed_cases']}")
-    print(f"robust_pass:      {summary.diagnostics['robust_pass']}")
-    print(f"total_seconds:    {total_seconds:.1f}")
-    print("results_tsv_row:")
-    status = "keep" if summary.diagnostics["robust_pass"] else "discard"
-    print(build_results_tsv_row(EXPERIMENT, summary, status))
+    print(f"failed_cases:     {failed_cases}")
+    print(f"robust_pass:      {robust_pass}")
+    print(f"seconds:          {total_seconds:.1f}")
+    print()
+
+    # Single-line TSV row for easy copy-paste into results.tsv
+    description = f"{EXPERIMENT.experiment_name} | {EXPERIMENT.changed_axis}"
+    tsv_row = (
+        f"results_tsv_row:\t{commit}\t{summary.val_sharpe:.6f}\t"
+        f"{total_seconds:.1f}\t{failed_cases}\t{robust_pass}\t{description}"
+    )
+    print(tsv_row)
 
 
 if __name__ == "__main__":

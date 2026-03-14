@@ -53,12 +53,6 @@ PRICE_DATASETS: tuple[RemoteDatasetSpec, ...] = (
         kind="prices",
     ),
     RemoteDatasetSpec(
-        name="factors",
-        filename="factors_dataset.csv.gz",
-        url=f"{UNIVERSAL_PORTFOLIO_DATA_URL}/factors_dataset.csv.gz",
-        kind="prices",
-    ),
-    RemoteDatasetSpec(
         name="ftse100",
         filename="ftse100_dataset.csv.gz",
         url=f"{SKFOLIO_DATASETS_URL}/ftse100_dataset.csv.gz",
@@ -208,13 +202,6 @@ def load_sp500_dataset(
     return _load_price_dataset("sp500", data_home, download_if_missing)
 
 
-def load_factors_dataset(
-    data_home: str | Path | None = None,
-    download_if_missing: bool = True,
-) -> pd.DataFrame:
-    return _load_price_dataset("factors", data_home, download_if_missing)
-
-
 def load_ftse100_dataset(
     data_home: str | Path | None = None,
     download_if_missing: bool = True,
@@ -235,13 +222,6 @@ def _load_relatives_dataset(
     return _to_linear_returns(relatives, spec.kind)
 
 
-def _load_sp500_and_factors() -> tuple[pd.DataFrame, pd.DataFrame]:
-    sp500_returns = load_sp500_dataset()
-    factor_returns = load_factors_dataset()
-    common_index = sp500_returns.index.intersection(factor_returns.index)
-    return sp500_returns.loc[common_index], factor_returns.loc[common_index]
-
-
 def get_all_datasets() -> list[DatasetCase]:
     """
     Load the dataset suite used by the research loop.
@@ -249,24 +229,11 @@ def get_all_datasets() -> list[DatasetCase]:
     The suite mixes:
     - price-based universes converted to net returns
     - price-relative universes converted to net returns
-    - a factor-aware S&P 500 case
     - a reversed-time version of every case
     """
-    sp500_returns, sp500_factors = _load_sp500_and_factors()
-    cases = [
-        DatasetCase("sp500", sp500_returns),
-        DatasetCase("sp500_reversed", _reverse_frame(sp500_returns)),
-        DatasetCase("sp500_factor", sp500_returns, sp500_factors),
-        DatasetCase(
-            "sp500_factor_reversed",
-            _reverse_frame(sp500_returns),
-            _reverse_frame(sp500_factors),
-        ),
-    ]
+    cases = []
 
     for spec in PRICE_DATASETS:
-        if spec.name == "sp500":
-            continue
         returns = _load_price_dataset(spec.name)
         cases.append(DatasetCase(spec.name, returns))
         cases.append(DatasetCase(f"{spec.name}_reversed", _reverse_frame(returns)))
