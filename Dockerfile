@@ -5,6 +5,7 @@ FROM ghcr.io/astral-sh/uv:debian-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
+    git \
     build-essential \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
