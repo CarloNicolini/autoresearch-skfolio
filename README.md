@@ -55,6 +55,10 @@ results.tsv     — experiment log (commit, val_sharpe, status, description)
 - **One metric, hard validation.** The score stays simple because the outer CV suite is intentionally strict.
 - **No GPU.** Pure sklearn/skfolio; runs on any machine.
 
+## Quickstart with Claude Code and free OpenRouter model credits
+
+Read this [guide](claude-code-guide.md) to get up and running in a sandboxed Docker environmnet where you can test Claude Code using OpenRouter with free models, like the latest `nvidia-nemotrom-super-120b`.
+
 ## License
 
 MIT
